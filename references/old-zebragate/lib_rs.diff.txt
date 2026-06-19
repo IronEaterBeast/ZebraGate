@@ -1,0 +1,511 @@
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index c1b8585..b882b57 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -2,6 +2,7 @@ use std::collections::HashSet;
+ use std::fs;
+ use std::io;
+ use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicU32, Ordering};
+ use std::sync::Arc;
+ 
+ use aes_gcm::aead::{Aead, KeyInit, OsRng as AesOsRng};
+@@ -19,9 +20,12 @@ use rand::RngCore;
+ use reqwest::Client;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+-use tauri::{Manager, State as TauriState};
++use tauri::image::Image;
++use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
++use tauri::tray::{TrayIconBuilder, TrayIconEvent};
++use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State as TauriState, WindowEvent};
+ use tokio::net::TcpListener;
+-use tokio::time::{sleep, Duration};
++use tokio::time::{interval, sleep, Duration};
+ use tokio::sync::{oneshot, Mutex};
+ use tower_http::cors::{Any, CorsLayer};
+ use uuid::Uuid;
+@@ -45,6 +49,138 @@ const BAD_GATEWAY_USER_MESSAGE: &str =
+ const UPSTREAM_ERROR_USER_MESSAGE: &str =
+   "ZebraGate could not complete this request. Please try again later.";
+ 
++const MAIN_WINDOW_LABEL: &str = "main";
++const AI_SELECTION_WINDOW_LABEL: &str = "ai-selection";
++const AI_SELECTION_WINDOW_WIDTH: f64 = 520.0;
++const AI_SELECTION_WINDOW_HEIGHT: f64 = 640.0;
++const ERROR_LOG_WINDOW_LABEL: &str = "error-log";
++const ERROR_LOG_WINDOW_WIDTH: f64 = 480.0;
++const ERROR_LOG_WINDOW_HEIGHT: f64 = 120.0;
++const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/32x32.png");
++const TRAY_ACTIVE_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-active.png");
++const TRAY_BLINK_INTERVAL_MS: u64 = 500;
++const WINDOW_GEOMETRY_WIDTH_DIVISOR: u32 = 3;
++const WINDOW_GEOMETRY_HEIGHT_DIVISOR: u32 = 5;
++const WINDOW_GEOMETRY_MARGIN: i32 = 20;
++const TRAY_MENU_SHOW_ID: &str = "show_main_window";
++const TRAY_MENU_QUIT_ID: &str = "quit";
++
++/// Computes the desktop window's default size and bottom-right position based on the
++/// primary monitor's work area (the screen area excluding the taskbar):
++/// width = work_area_width / 3, height = work_area_height / 5.
++fn compute_window_geometry(
++  work_area_position: PhysicalPosition<i32>,
++  work_area_size: PhysicalSize<u32>,
++) -> (PhysicalSize<u32>, PhysicalPosition<i32>) {
++  let width = (work_area_size.width / WINDOW_GEOMETRY_WIDTH_DIVISOR).max(1);
++  let height = (work_area_size.height / WINDOW_GEOMETRY_HEIGHT_DIVISOR).max(1);
++
++  let x = work_area_position.x + (work_area_size.width as i32 - width as i32 - WINDOW_GEOMETRY_MARGIN).max(0);
++  let y = work_area_position.y + (work_area_size.height as i32 - height as i32 - WINDOW_GEOMETRY_MARGIN).max(0);
++
++  (PhysicalSize::new(width, height), PhysicalPosition::new(x, y))
++}
++
++fn apply_initial_window_geometry(window: &tauri::WebviewWindow) {
++  let monitor = match window.primary_monitor() {
++    Ok(Some(monitor)) => monitor,
++    _ => return,
++  };
++
++  let work_area = monitor.work_area();
++  let (size, position) = compute_window_geometry(work_area.position, work_area.size);
++
++  if let Err(error) = window.set_size(size) {
++    eprintln!("Failed to set desktop window size: {error}");
++  }
++  if let Err(error) = window.set_position(position) {
++    eprintln!("Failed to set desktop window position: {error}");
++  }
++}
++
++fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
++  let show_item = MenuItem::with_id(app, TRAY_MENU_SHOW_ID, "显示主窗口", true, None::<&str>)?;
++  let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT_ID, "退出", true, None::<&str>)?;
++  let separator = PredefinedMenuItem::separator(app)?;
++  let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
++
++  let normal_icon = Image::from_bytes(TRAY_ICON_BYTES)?;
++
++  let tray = TrayIconBuilder::with_id("main-tray")
++    .icon(normal_icon)
++    .tooltip("ZebraGate")
++    .menu(&menu)
++    .show_menu_on_left_click(false)
++    .on_menu_event(|app_handle, event| match event.id().as_ref() {
++      TRAY_MENU_SHOW_ID => show_main_window(app_handle),
++      TRAY_MENU_QUIT_ID => quit_app(app_handle),
++      _ => {}
++    })
++    .on_tray_icon_event(|tray, event| {
++      if let TrayIconEvent::Click { .. } = event {
++        show_main_window(tray.app_handle());
++      }
++    })
++    .build(app)?;
++
++  app.manage(tray);
++
++  spawn_tray_blink_task(app.handle().clone());
++
++  Ok(())
++}
++
++fn show_main_window(app_handle: &AppHandle) {
++  if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
++    let _ = window.show();
++    let _ = window.set_focus();
++  }
++}
++
++fn quit_app(app_handle: &AppHandle) {
++  let app_handle = app_handle.clone();
++  tauri::async_runtime::spawn(async move {
++    let state = app_handle.state::<DesktopSharedState>();
++    let shutdown_tx = {
++      let mut runtime = state.inner.lock().await;
++      runtime.proxy_status.running = false;
++      runtime.shutdown_tx.take()
++    };
++    if let Some(sender) = shutdown_tx {
++      let _ = sender.send(());
++    }
++    app_handle.exit(0);
++  });
++}
++
++fn spawn_tray_blink_task(app_handle: AppHandle) {
++  tauri::async_runtime::spawn(async move {
++    let normal_icon = Image::from_bytes(TRAY_ICON_BYTES).expect("tray icon bytes should decode");
++    let active_icon = Image::from_bytes(TRAY_ACTIVE_ICON_BYTES).expect("tray active icon bytes should decode");
++    let mut showing_active_icon = false;
++    let mut ticker = interval(Duration::from_millis(TRAY_BLINK_INTERVAL_MS));
++
++    loop {
++      ticker.tick().await;
++
++      let Some(tray) = app_handle.tray_by_id("main-tray") else {
++        continue;
++      };
++      let state = app_handle.state::<DesktopSharedState>();
++      let has_active_requests = state.active_request_count.load(Ordering::Relaxed) > 0;
++
++      if has_active_requests {
++        showing_active_icon = !showing_active_icon;
++        let icon = if showing_active_icon { &active_icon } else { &normal_icon };
++        let _ = tray.set_icon(Some(icon.clone()));
++      } else if showing_active_icon {
++        showing_active_icon = false;
++        let _ = tray.set_icon(Some(normal_icon.clone()));
++      }
++    }
++  });
++}
++
+ enum LocalPortBindingStrategy {
+   Exact(u16),
+   FallbackRange { start_port: u16, max_attempts: u16 },
+@@ -58,6 +194,48 @@ struct DesktopSharedState {
+   auth_key_path: Arc<PathBuf>,
+   privacy_keywords: Arc<Vec<String>>,
+   inner: Arc<Mutex<DesktopRuntimeState>>,
++  active_request_count: Arc<AtomicU32>,
++}
++
++/// Marks a local proxy request as "in progress" for the tray icon blink indicator.
++/// Increments the shared counter on creation and decrements it on drop, covering
++/// both early returns and (when held by a `GuardedStream`) the lifetime of a streamed response.
++struct ActiveRequestGuard {
++  active_request_count: Arc<AtomicU32>,
++}
++
++impl ActiveRequestGuard {
++  fn new(active_request_count: Arc<AtomicU32>) -> Self {
++    active_request_count.fetch_add(1, Ordering::Relaxed);
++    Self { active_request_count }
++  }
++}
++
++impl Drop for ActiveRequestGuard {
++  fn drop(&mut self) {
++    self.active_request_count.fetch_sub(1, Ordering::Relaxed);
++  }
++}
++
++/// Wraps a byte stream so the `ActiveRequestGuard` stays alive until the stream
++/// is fully consumed or dropped (e.g. when the streamed response finishes or the client disconnects).
++struct GuardedStream<S> {
++  inner: S,
++  _guard: ActiveRequestGuard,
++}
++
++impl<S> futures_util::Stream for GuardedStream<S>
++where
++  S: futures_util::Stream + Unpin,
++{
++  type Item = S::Item;
++
++  fn poll_next(
++    mut self: std::pin::Pin<&mut Self>,
++    cx: &mut std::task::Context<'_>,
++  ) -> std::task::Poll<Option<Self::Item>> {
++    std::pin::Pin::new(&mut self.inner).poll_next(cx)
++  }
+ }
+ 
+ struct DesktopRuntimeState {
+@@ -247,10 +425,17 @@ pub fn run() {
+           shutdown_tx: None,
+           auth_session,
+         })),
++        active_request_count: Arc::new(AtomicU32::new(0)),
+       };
+ 
+       app.manage(state);
+ 
++      if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
++        apply_initial_window_geometry(&window);
++      }
++
++      setup_system_tray(app)?;
++
+       let app_handle = app.handle().clone();
+       tauri::async_runtime::spawn(async move {
+         let state = app_handle.state::<DesktopSharedState>();
+@@ -261,6 +446,14 @@ pub fn run() {
+ 
+       Ok(())
+     })
++    .on_window_event(|window, event| {
++      if window.label() == MAIN_WINDOW_LABEL {
++        if let WindowEvent::CloseRequested { api, .. } = event {
++          api.prevent_close();
++          let _ = window.hide();
++        }
++      }
++    })
+     .invoke_handler(tauri::generate_handler![
+       get_desktop_runtime_snapshot,
+       get_desktop_config,
+@@ -272,7 +465,9 @@ pub fn run() {
+       save_ai_option_selection,
+       open_login_url,
+       get_auth_status,
+-      logout
++      logout,
++      open_ai_selection_window,
++      open_error_log_window
+     ])
+     .run(tauri::generate_context!())
+     .expect("error while running tauri application");
+@@ -369,6 +564,7 @@ async fn start_local_proxy(
+     state.auth_session_path.clone(),
+     state.auth_key_path.clone(),
+     state.privacy_keywords.clone(),
++    state.active_request_count.clone(),
+   );
+ 
+   tauri::async_runtime::spawn(async move {
+@@ -520,6 +716,58 @@ async fn save_ai_option_selection(
+   })
+ }
+ 
++#[tauri::command]
++async fn open_ai_selection_window(app_handle: tauri::AppHandle) -> Result<(), String> {
++  if let Some(window) = app_handle.get_webview_window(AI_SELECTION_WINDOW_LABEL) {
++    window.show().map_err(|error| error.to_string())?;
++    window.set_focus().map_err(|error| error.to_string())?;
++    return Ok(());
++  }
++
++  tauri::WebviewWindowBuilder::new(
++    &app_handle,
++    AI_SELECTION_WINDOW_LABEL,
++    tauri::WebviewUrl::App("index.html#/ai-selection".into()),
++  )
++  .title("Edit AI List")
++  .inner_size(AI_SELECTION_WINDOW_WIDTH, AI_SELECTION_WINDOW_HEIGHT)
++  .min_inner_size(360.0, 400.0)
++  .resizable(true)
++  .build()
++  .map_err(|error| error.to_string())?;
++
++  Ok(())
++}
++
++#[tauri::command]
++async fn open_error_log_window(app_handle: tauri::AppHandle, errors: Vec<String>) -> Result<(), String> {
++  let errors_json = serde_json::to_string(&errors).map_err(|error| error.to_string())?;
++  let hash = format!("#/error-log?errors={}", urlencoding_encode(&errors_json));
++
++  if let Some(window) = app_handle.get_webview_window(ERROR_LOG_WINDOW_LABEL) {
++    window
++      .eval(&format!("window.location.hash = {hash:?}"))
++      .map_err(|error| error.to_string())?;
++    window.show().map_err(|error| error.to_string())?;
++    window.set_focus().map_err(|error| error.to_string())?;
++    return Ok(());
++  }
++
++  tauri::WebviewWindowBuilder::new(
++    &app_handle,
++    ERROR_LOG_WINDOW_LABEL,
++    tauri::WebviewUrl::App(format!("index.html{hash}").into()),
++  )
++  .title("错误信息")
++  .inner_size(ERROR_LOG_WINDOW_WIDTH, ERROR_LOG_WINDOW_HEIGHT)
++  .min_inner_size(320.0, ERROR_LOG_WINDOW_HEIGHT)
++  .resizable(true)
++  .build()
++  .map_err(|error| error.to_string())?;
++
++  Ok(())
++}
++
+ #[tauri::command]
+ async fn open_login_url(
+   app_handle: tauri::AppHandle,
+@@ -583,6 +831,7 @@ fn build_local_proxy_router(
+   auth_session_path: Arc<PathBuf>,
+   auth_key_path: Arc<PathBuf>,
+   privacy_keywords: Arc<Vec<String>>,
++  active_request_count: Arc<AtomicU32>,
+ ) -> Router {
+   let state = DesktopSharedState {
+     client,
+@@ -591,6 +840,7 @@ fn build_local_proxy_router(
+     auth_key_path,
+     privacy_keywords,
+     inner,
++    active_request_count,
+   };
+ 
+   let cors = CorsLayer::new()
+@@ -670,6 +920,8 @@ async fn local_chat_completions_handler(
+   headers: HeaderMap,
+   body: Bytes,
+ ) -> Response<Body> {
++  let active_request_guard = ActiveRequestGuard::new(state.active_request_count.clone());
++
+   if let Err(response) = authorize_local_request(&state, &headers).await {
+     return response;
+   }
+@@ -771,7 +1023,7 @@ async fn local_chat_completions_handler(
+     }
+   };
+ 
+-  build_proxy_response(state, remote_response).await
++  build_proxy_response(state, remote_response, active_request_guard).await
+ }
+ 
+ async fn local_not_found_handler() -> Response<Body> {
+@@ -834,6 +1086,7 @@ async fn authorize_local_request(
+ async fn build_proxy_response(
+   state: DesktopSharedState,
+   remote_response: reqwest::Response,
++  active_request_guard: ActiveRequestGuard,
+ ) -> Response<Body> {
+   let status = remote_response.status();
+   let content_type = remote_response.headers().get(CONTENT_TYPE).cloned();
+@@ -858,8 +1111,12 @@ async fn build_proxy_response(
+     if let Some(value) = cache_control {
+       builder = builder.header(CACHE_CONTROL, value);
+     }
++    let guarded_stream = GuardedStream {
++      inner: remote_response.bytes_stream(),
++      _guard: active_request_guard,
++    };
+     return builder
+-      .body(Body::from_stream(remote_response.bytes_stream()))
++      .body(Body::from_stream(guarded_stream))
+       .unwrap_or_else(|_| openai_error_response(StatusCode::BAD_GATEWAY, UPSTREAM_ERROR_USER_MESSAGE, "UPSTREAM_ERROR"));
+   }
+ 
+@@ -1480,6 +1737,72 @@ mod tests {
+     assert_eq!(matches, vec!["private key".to_string(), "助记词".to_string()]);
+   }
+ 
++  #[test]
++  fn compute_window_geometry_sizes_window_relative_to_monitor() {
++    let (size, _position) = compute_window_geometry(
++      PhysicalPosition::new(0, 0),
++      PhysicalSize::new(1920, 1080),
++    );
++
++    assert_eq!(size.width, 1920 / WINDOW_GEOMETRY_WIDTH_DIVISOR);
++    assert_eq!(size.height, 1080 / WINDOW_GEOMETRY_HEIGHT_DIVISOR);
++  }
++
++  #[test]
++  fn compute_window_geometry_positions_window_at_bottom_right_of_work_area() {
++    let (size, position) = compute_window_geometry(
++      PhysicalPosition::new(0, 0),
++      PhysicalSize::new(1920, 1040),
++    );
++
++    let expected_x = 1920 - size.width as i32 - WINDOW_GEOMETRY_MARGIN;
++    let expected_y = 1040 - size.height as i32 - WINDOW_GEOMETRY_MARGIN;
++
++    assert_eq!(position.x, expected_x);
++    assert_eq!(position.y, expected_y);
++    assert!(position.x > 0);
++    assert!(position.y > 0);
++  }
++
++  #[test]
++  fn compute_window_geometry_offsets_by_work_area_position() {
++    let (size, position) = compute_window_geometry(
++      PhysicalPosition::new(100, 50),
++      PhysicalSize::new(1920, 1040),
++    );
++
++    let expected_x = 100 + (1920 - size.width as i32 - WINDOW_GEOMETRY_MARGIN);
++    let expected_y = 50 + (1040 - size.height as i32 - WINDOW_GEOMETRY_MARGIN);
++
++    assert_eq!(position.x, expected_x);
++    assert_eq!(position.y, expected_y);
++  }
++
++  #[test]
++  fn compute_window_geometry_clamps_to_zero_for_tiny_monitors() {
++    let (size, position) = compute_window_geometry(
++      PhysicalPosition::new(0, 0),
++      PhysicalSize::new(10, 10),
++    );
++
++    assert!(size.width >= 1);
++    assert!(size.height >= 1);
++    assert_eq!(position.x, 0);
++    assert_eq!(position.y, 0);
++  }
++
++  #[test]
++  fn active_request_guard_increments_and_decrements_counter() {
++    let counter = Arc::new(AtomicU32::new(0));
++
++    {
++      let _guard = ActiveRequestGuard::new(counter.clone());
++      assert_eq!(counter.load(Ordering::Relaxed), 1);
++    }
++
++    assert_eq!(counter.load(Ordering::Relaxed), 0);
++  }
++
+   #[test]
+   fn inject_ai_option_ids_overrides_client_values() {
+     let mut request_body = json!({
+@@ -1701,6 +2024,7 @@ mod tests {
+         shutdown_tx: None,
+         auth_session: None,
+       })),
++      active_request_count: Arc::new(AtomicU32::new(0)),
+     };
+ 
+     let payload = AuthCallbackPayload {
+@@ -1813,6 +2137,7 @@ mod tests {
+           expires_at: None,
+         }),
+       })),
++      active_request_count: Arc::new(AtomicU32::new(0)),
+     };
+     let mut headers = HeaderMap::new();
+     headers.insert(
+@@ -1879,6 +2204,7 @@ mod tests {
+         shutdown_tx: None,
+         auth_session: None,
+       })),
++      active_request_count: Arc::new(AtomicU32::new(0)),
+     };
+     let mut headers = HeaderMap::new();
+     headers.insert(
+@@ -1945,6 +2271,7 @@ mod tests {
+         shutdown_tx: None,
+         auth_session: None,
+       })),
++      active_request_count: Arc::new(AtomicU32::new(0)),
+     };
+ 
+     let app = build_local_proxy_router(
+@@ -1954,6 +2281,7 @@ mod tests {
+       shared_state.auth_session_path.clone(),
+       shared_state.auth_key_path.clone(),
+       shared_state.privacy_keywords.clone(),
++      shared_state.active_request_count.clone(),
+     );
+     let listener = TcpListener::bind((LOCAL_PROXY_HOST, 0))
+       .await
+@@ -2429,6 +2757,7 @@ mod tests {
+           expires_at: None,
+         }),
+       })),
++      active_request_count: Arc::new(AtomicU32::new(0)),
+     };
+ 
+     let app = build_local_proxy_router(
+@@ -2438,6 +2767,7 @@ mod tests {
+       shared_state.auth_session_path.clone(),
+       shared_state.auth_key_path.clone(),
+       shared_state.privacy_keywords.clone(),
++      shared_state.active_request_count.clone(),
+     );
+     let listener = TcpListener::bind((LOCAL_PROXY_HOST, 0))
+       .await

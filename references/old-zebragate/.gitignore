@@ -1,0 +1,24 @@
+node_modules/
+.pnpm-store/
+.next/
+dist/
+coverage/
+.turbo/
+.vite/
+.tauri/
+target/
+src-tauri/target/
+*.tsbuildinfo
+apps/web/next-env.d.ts
+*.log
+.env
+.env.local
+.env.*.local
+!.env.example
+my_changes.diff
+notify.bat
+notify.ps1
+docs/
+
+# 用于参考的别人的仓库，不应该被跟踪
+/reference-repos/

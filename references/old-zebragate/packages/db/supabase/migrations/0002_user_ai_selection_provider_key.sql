@@ -1,0 +1,13 @@
+-- Deprecated migration kept only to preserve local migration ordering.
+-- Provider selection is a desktop-local concern in the current MVP.
+-- The API server no longer persists or reads user provider selections for default routing.
+--
+-- If this migration was previously applied in a local development database, clean it up manually:
+--   alter table public.user_ai_selections drop constraint if exists user_ai_selections_user_id_provider_key_key;
+--   drop index if exists idx_user_ai_selections_user_id_provider_key;
+--   alter table public.user_ai_selections drop column if exists provider_key;
+--   alter table public.user_ai_selections alter column provider_id set not null;
+--   alter table public.user_ai_selections add constraint user_ai_selections_user_id_provider_id_key
+--     unique (user_id, provider_id);
+--   create index if not exists idx_user_ai_selections_user_id_provider_id
+--     on public.user_ai_selections (user_id, provider_id);
