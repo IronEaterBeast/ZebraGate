@@ -1,0 +1,4 @@
+@'
+[install]
+registry = "https://registry.npmmirror.com"
+'@ | Set-Content -Encoding utf8 bunfig.toml

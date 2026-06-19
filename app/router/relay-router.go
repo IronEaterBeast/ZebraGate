@@ -186,6 +186,44 @@ func SetRelayRouter(router *gin.Engine) {
 		relaySunoRouter.GET("/fetch/:id", controller.RelayTaskFetch)
 	}
 
+	// ZebraGate 桌面客户端转发入口。
+	// 桌面客户端携带用户 access token（而非 API 令牌），经 DesktopAuth 映射到用户后，
+	// 复用既有的 Distribute + Relay 完成渠道调用、日志记录与扣费。
+	// 第一阶段忽略请求体中的 ai_option_ids，直接按请求体 model 走既有渠道分发。
+	desktopRouter := router.Group("/v1/openai")
+	desktopRouter.Use(middleware.RouteTag("relay"))
+	desktopRouter.Use(middleware.SystemPerformanceCheck())
+	desktopRouter.Use(middleware.DesktopAuth())
+	// 在分发与计费之前，把请求路径规整为标准 OpenAI 路径，复用既有 relay 的路径模式
+	// 判定（Distribute/Path2RelayMode 等都依赖 URL.Path），避免 /v1/openai 前缀
+	// 导致 RelayMode 解析为 Unknown。
+	desktopRouter.Use(func(c *gin.Context) {
+		c.Request.URL.Path = "/v1/chat/completions"
+		c.Next()
+	})
+	desktopRouter.Use(middleware.ModelRequestRateLimit())
+	desktopRouter.Use(middleware.Distribute())
+	{
+		desktopRouter.POST("/chat/completions", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatOpenAI)
+		})
+	}
+
+	// 桌面链路埋点上报：需桌面鉴权，但不进入渠道分发。第一阶段仅落日志。
+	desktopTraceRouter := router.Group("/v1/openai")
+	desktopTraceRouter.Use(middleware.RouteTag("relay"))
+	desktopTraceRouter.Use(middleware.DesktopAuth())
+	{
+		desktopTraceRouter.POST("/trace-events", controller.DesktopTraceEvent)
+	}
+
+	// 桌面登录态刷新：匿名端点，body 携带 refreshToken。第一阶段返回原 token + 远期过期时间。
+	desktopAuthRouter := router.Group("/v1/auth")
+	desktopAuthRouter.Use(middleware.RouteTag("relay"))
+	{
+		desktopAuthRouter.POST("/refresh", controller.DesktopAuthRefresh)
+	}
+
 	relayGeminiRouter := router.Group("/v1beta")
 	relayGeminiRouter.Use(middleware.RouteTag("relay"))
 	relayGeminiRouter.Use(middleware.SystemPerformanceCheck())

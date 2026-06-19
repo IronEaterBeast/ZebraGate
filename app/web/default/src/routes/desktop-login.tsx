@@ -16,28 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type * as React from 'react'
+import { z } from 'zod'
+import { createFileRoute } from '@tanstack/react-router'
+import { DesktopLogin } from '@/features/desktop-login'
 
-export type DropdownMenuItemSelectEvent = React.MouseEvent<HTMLElement> & {
-  preventBaseUIHandler?: () => void
-}
+const searchSchema = z.object({
+  callback: z.string().optional(),
+})
 
-export type DropdownMenuItemSelectHandler = (
-  event: DropdownMenuItemSelectEvent
-) => void
-
-export function handleDropdownMenuItemSelect(
-  event: DropdownMenuItemSelectEvent,
-  onClick?: React.MouseEventHandler<HTMLElement>,
-  onSelect?: DropdownMenuItemSelectHandler
-) {
-  onClick?.(event)
-
-  if (!event.defaultPrevented) {
-    onSelect?.(event)
-  }
-
-  if (event.defaultPrevented) {
-    event.preventBaseUIHandler?.()
-  }
-}
+export const Route = createFileRoute('/desktop-login')({
+  component: DesktopLogin,
+  validateSearch: searchSchema,
+})
