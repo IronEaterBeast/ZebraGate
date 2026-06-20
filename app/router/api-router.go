@@ -77,12 +77,18 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.GET("/epay/notify", controller.EpayNotify)
 			userRoute.GET("/groups", controller.GetUserGroups)
 
+			// 注意：实际路径是 /api/user/models（不带 self 前缀）。
+			// 这里显式挂在 userRoute 上、而非 selfRoute 组内，以避免变量名/分组语义
+			// 误导成 /api/user/self/models（历史上桌面端曾据此误写为 /self/models 导致 404）。
+			// 桌面端据此拉取当前用户可用 model 列表，请勿改成 /self/models。
+			// 鉴权与原 selfRoute 组一致：显式补 UserAuth()。
+			userRoute.GET("/models", middleware.UserAuth(), controller.GetUserModels)
+
 			selfRoute := userRoute.Group("/")
 			selfRoute.Use(middleware.UserAuth())
 			{
 				selfRoute.GET("/self/groups", controller.GetUserGroups)
 				selfRoute.GET("/self", controller.GetSelf)
-				selfRoute.GET("/models", controller.GetUserModels)
 				selfRoute.PUT("/self", controller.UpdateSelf)
 				selfRoute.DELETE("/self", controller.DeleteSelf)
 				selfRoute.GET("/token", controller.GenerateAccessToken)
@@ -263,6 +269,14 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/upstream_updates/apply_all", controller.ApplyAllChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect", controller.DetectChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
+		}
+		// 模型标签管理（管理员）：维护「标签 -> model 名列表」映射，
+		// 目前第一个标签为 default，桌面新建分组时据此自动勾选默认 model。
+		modelTagRoute := apiRouter.Group("/model-tag")
+		modelTagRoute.Use(middleware.AdminAuth())
+		{
+			modelTagRoute.GET("/", controller.GetModelTags)
+			modelTagRoute.PUT("/", controller.UpdateModelTags)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

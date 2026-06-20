@@ -137,3 +137,25 @@ func TestDesktopTraceEventRejectsInvalidJSON(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, recorder.Code)
 }
+
+// /v1/credits/balance 必须返回当前用户的 quota 作为 balance。
+func TestDesktopCreditsBalanceReturnsUserQuota(t *testing.T) {
+	db := setupDesktopControllerTestDB(t)
+	user := &model.User{
+		Username: "credits-user",
+		Password: "placeholder-pass",
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+		Quota:    123456,
+	}
+	require.NoError(t, db.Create(user).Error)
+
+	ctx, recorder := newDesktopRequestContext(t, http.MethodGet, "/v1/credits/balance", "")
+	ctx.Set("id", user.Id)
+	DesktopCreditsBalance(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var body map[string]any
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &body))
+	assert.EqualValues(t, 123456, body["balance"])
+}

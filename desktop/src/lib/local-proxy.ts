@@ -1,8 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ZEBRAGATE_MODEL } from "@zebragate/shared";
-import type { PublicAiOption } from "@zebragate/shared";
-
-export type { PublicAiOption } from "@zebragate/shared";
+import { ZEBRAGATE_MODEL } from "./zebragate-shared";
 
 export interface LocalProxyStatus {
   running: boolean;
@@ -18,7 +15,7 @@ export interface DesktopGroupSummary {
   localKey: string;
   lastUsedAt: number | null;
   isDefault: boolean;
-  selectedAiOptionCount: number;
+  selectedModelCount: number;
 }
 
 export interface DesktopGroupConfig {
@@ -26,7 +23,7 @@ export interface DesktopGroupConfig {
   name: string;
   localKey: string;
   lastUsedAt: number | null;
-  selectedAiOptionIds: string[];
+  selectedModels: string[];
 }
 
 export interface DesktopConfigSnapshot {
@@ -48,20 +45,23 @@ export interface DesktopRuntimeSnapshot {
   groups: DesktopGroupSummary[];
 }
 
-export interface AiOptionSelectionSnapshot {
-  aiOptionIds: string[];
+export interface ModelSelectionSnapshot {
+  models: string[];
 }
 
-export interface UnavailableAiOptionNotice {
+export interface UnavailableModelNotice {
   groupName: string;
-  aiOptionNames: string[];
+  modelNames: string[];
 }
 
-export interface AiOptionCatalogSnapshot {
-  aiOptions: PublicAiOption[];
+export interface ModelCatalogSnapshot {
+  models: string[];
   fetchedAt: number | null;
   isStale: boolean;
-  unavailableAiOptionNotices: UnavailableAiOptionNotice[];
+  unavailableModelNotices: UnavailableModelNotice[];
+  // 仅当用户当前实际无法使用（本地无可用 model 且最近拉取失败/服务器返回空）时非空。
+  // 本地有缓存数据时即使最近拉取失败也为 null——不打扰用户。由后端统一推导。
+  catalogError: string | null;
 }
 
 export interface AuthStatusSnapshot {
@@ -96,27 +96,33 @@ export async function getDesktopConfig(): Promise<DesktopConfigSnapshot> {
   return invoke<DesktopConfigSnapshot>("get_desktop_config");
 }
 
-export async function getAiOptionCatalog(): Promise<AiOptionCatalogSnapshot> {
-  return invoke<AiOptionCatalogSnapshot>("get_ai_option_catalog");
+export async function getModelCatalog(): Promise<ModelCatalogSnapshot> {
+  return invoke<ModelCatalogSnapshot>("get_model_catalog");
 }
 
-export async function refreshAiOptionCatalog(): Promise<AiOptionCatalogSnapshot> {
-  return invoke<AiOptionCatalogSnapshot>("refresh_ai_option_catalog");
+export async function refreshModelCatalog(): Promise<ModelCatalogSnapshot> {
+  return invoke<ModelCatalogSnapshot>("refresh_model_catalog");
 }
 
-export async function clearUnavailableAiOptionNotices(): Promise<void> {
-  return invoke<void>("clear_unavailable_ai_option_notices");
+// 进入首屏 / 分组管理时主动触发一次拉取。无论成败都不抛错：是否报错由返回快照的
+// catalogError 决定（本地有数据时即使失败也静默，仅在用户实际不可用时才提示）。
+export async function refreshModelCatalogSilently(): Promise<ModelCatalogSnapshot> {
+  return invoke<ModelCatalogSnapshot>("refresh_model_catalog_silently");
 }
 
-export async function getAiOptionSelection(groupId: string): Promise<AiOptionSelectionSnapshot> {
-  return invoke<AiOptionSelectionSnapshot>("get_ai_option_selection", { groupId });
+export async function clearUnavailableModelNotices(): Promise<void> {
+  return invoke<void>("clear_unavailable_model_notices");
 }
 
-export async function saveAiOptionSelection(
+export async function getModelSelection(groupId: string): Promise<ModelSelectionSnapshot> {
+  return invoke<ModelSelectionSnapshot>("get_model_selection", { groupId });
+}
+
+export async function saveModelSelection(
   groupId: string,
-  aiOptionIds: string[]
-): Promise<AiOptionSelectionSnapshot> {
-  return invoke<AiOptionSelectionSnapshot>("save_ai_option_selection", { groupId, aiOptionIds });
+  models: string[]
+): Promise<ModelSelectionSnapshot> {
+  return invoke<ModelSelectionSnapshot>("save_model_selection", { groupId, models });
 }
 
 export async function listGroups(): Promise<DesktopGroupSummary[]> {

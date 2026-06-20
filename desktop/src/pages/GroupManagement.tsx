@@ -5,8 +5,7 @@ import {
   deleteGroup,
   renameGroup,
   type DesktopGroupSummary,
-  type PublicAiOption,
-  type UnavailableAiOptionNotice
+  type UnavailableModelNotice
 } from "../lib/api-client";
 import { formatGroupLastUsedAt } from "../lib/group-usage";
 
@@ -20,7 +19,7 @@ export function canDeleteSelectedGroup(groups: DesktopGroupSummary[], selectedGr
   return selectedGroup !== null && groups.length > 1;
 }
 
-export function formatAiOptionCatalogFetchedAt(fetchedAt: number | null): string {
+export function formatModelCatalogFetchedAt(fetchedAt: number | null): string {
   if (fetchedAt === null) {
     return "从未更新";
   }
@@ -28,26 +27,17 @@ export function formatAiOptionCatalogFetchedAt(fetchedAt: number | null): string
   return new Date(fetchedAt * 1000).toLocaleString();
 }
 
-export function formatUnavailableAiOptionNoticeText(notices: UnavailableAiOptionNotice[]): string {
+export function formatUnavailableModelNoticeText(notices: UnavailableModelNotice[]): string {
   return [
-    "以下 AI 已不再可用，并已从分组中移除，可能影响生成效果：",
-    ...notices.map((notice) => `${notice.groupName}：${notice.aiOptionNames.join("、")}`)
+    "以下 model 已不再可用，并已从分组中移除，可能影响生成效果：",
+    ...notices.map((notice) => `${notice.groupName}：${notice.modelNames.join("、")}`)
   ].join("\n");
 }
 
-export function sortAiOptionsByName(aiOptions: PublicAiOption[]): PublicAiOption[] {
-  return [...aiOptions].sort((left, right) => {
-    const nameComparison = left.publicName.localeCompare(right.publicName, "zh-CN", {
-      numeric: true,
-      sensitivity: "base"
-    });
-
-    if (nameComparison !== 0) {
-      return nameComparison;
-    }
-
-    return left.aiOptionId.localeCompare(right.aiOptionId);
-  });
+export function sortModelsByName(models: string[]): string[] {
+  return [...models].sort((left, right) =>
+    left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" })
+  );
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -71,7 +61,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export function GroupManagementPage({
-  aiOptions,
+  models,
   catalogError,
   catalogFetchedAt,
   groups,
@@ -84,14 +74,14 @@ export function GroupManagementPage({
   onRefreshCatalog,
   onSaveSelection,
   onSelectGroup,
-  onClearUnavailableAiOptionNotices,
+  onClearUnavailableModelNotices,
   refreshFeedback,
   refreshFeedbackKind,
-  selectedAiOptionIds,
+  selectedModels,
   selectedGroup,
-  unavailableAiOptionNotices
+  unavailableModelNotices
 }: {
-  aiOptions: PublicAiOption[];
+  models: string[];
   catalogError: string | null;
   catalogFetchedAt: number | null;
   groups: DesktopGroupSummary[];
@@ -102,14 +92,14 @@ export function GroupManagementPage({
   onGroupDeleted: (groupId: string) => void;
   onGroupUpdated: (group: DesktopGroupSummary) => void;
   onRefreshCatalog: () => Promise<void>;
-  onSaveSelection: (selectedAiOptionIds: string[]) => Promise<void>;
+  onSaveSelection: (selectedModels: string[]) => Promise<void>;
   onSelectGroup: (groupId: string) => void;
-  onClearUnavailableAiOptionNotices: () => Promise<void>;
+  onClearUnavailableModelNotices: () => Promise<void>;
   refreshFeedback: string | null;
   refreshFeedbackKind: "success" | "error";
-  selectedAiOptionIds: string[];
+  selectedModels: string[];
   selectedGroup: DesktopGroupSummary | null;
-  unavailableAiOptionNotices: UnavailableAiOptionNotice[];
+  unavailableModelNotices: UnavailableModelNotice[];
 }) {
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -117,20 +107,16 @@ export function GroupManagementPage({
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [isBusy, setIsBusy] = useState(false);
-  const [isClearingUnavailableAiOptionNotices, setIsClearingUnavailableAiOptionNotices] = useState(false);
+  const [isClearingUnavailableModelNotices, setIsClearingUnavailableModelNotices] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savingAiOptionIds, setSavingAiOptionIds] = useState<string[]>([]);
+  const [savingModels, setSavingModels] = useState<string[]>([]);
 
-  const unavailableAiOptionNoticeText = useMemo(
-    () => formatUnavailableAiOptionNoticeText(unavailableAiOptionNotices),
-    [unavailableAiOptionNotices]
+  const unavailableModelNoticeText = useMemo(
+    () => formatUnavailableModelNoticeText(unavailableModelNotices),
+    [unavailableModelNotices]
   );
 
-  const selectableAiOptionIds = useMemo(
-    () => aiOptions.filter((option) => option.status !== "disabled").map((option) => option.aiOptionId),
-    [aiOptions]
-  );
-  const sortedAiOptions = useMemo(() => sortAiOptionsByName(aiOptions), [aiOptions]);
+  const sortedModels = useMemo(() => sortModelsByName(models), [models]);
 
   useEffect(() => {
     setIsRenaming(false);
@@ -229,35 +215,31 @@ export function GroupManagementPage({
     }
   }
 
-  async function toggleAiOption(aiOptionId: string): Promise<void> {
-    if (!selectableAiOptionIds.includes(aiOptionId)) {
-      return;
-    }
-
-    const nextSelectedAiOptionIds = selectedAiOptionIds.includes(aiOptionId)
-      ? selectedAiOptionIds.filter((id) => id !== aiOptionId)
-      : [...selectedAiOptionIds, aiOptionId];
+  async function toggleModel(model: string): Promise<void> {
+    const nextSelectedModels = selectedModels.includes(model)
+      ? selectedModels.filter((name) => name !== model)
+      : [...selectedModels, model];
 
     try {
-      setSavingAiOptionIds((current) => [...current, aiOptionId]);
+      setSavingModels((current) => [...current, model]);
       setError(null);
-      await onSaveSelection(nextSelectedAiOptionIds);
+      await onSaveSelection(nextSelectedModels);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Failed to save AI option selection.");
+      setError(saveError instanceof Error ? saveError.message : "Failed to save model selection.");
     } finally {
-      setSavingAiOptionIds((current) => current.filter((id) => id !== aiOptionId));
+      setSavingModels((current) => current.filter((name) => name !== model));
     }
   }
 
-  async function handleClearUnavailableAiOptionNotices(): Promise<void> {
+  async function handleClearUnavailableModelNotices(): Promise<void> {
     try {
-      setIsClearingUnavailableAiOptionNotices(true);
+      setIsClearingUnavailableModelNotices(true);
       setError(null);
-      await onClearUnavailableAiOptionNotices();
+      await onClearUnavailableModelNotices();
     } catch (clearError) {
-      setError(clearError instanceof Error ? clearError.message : "Failed to clear unavailable AI option notices.");
+      setError(clearError instanceof Error ? clearError.message : "Failed to clear unavailable model notices.");
     } finally {
-      setIsClearingUnavailableAiOptionNotices(false);
+      setIsClearingUnavailableModelNotices(false);
     }
   }
 
@@ -269,29 +251,29 @@ export function GroupManagementPage({
 
       {error ? <div className="error-banner">{error}</div> : null}
       {catalogError ? <div className="error-banner">{catalogError}</div> : null}
-      {isCatalogStale ? <div className="warning-banner">AI 列表已超过 2 天未更新，可能影响当前使用。</div> : null}
-      {unavailableAiOptionNotices.length > 0 ? (
+      {isCatalogStale ? <div className="warning-banner">model 列表已超过 2 天未更新，可能影响当前使用。</div> : null}
+      {unavailableModelNotices.length > 0 ? (
         <div className="unavailable-notice-banner">
           <div className="unavailable-notice-header">
             <span className="unavailable-notice-icon">⚠</span>
-            <span className="unavailable-notice-title">以下 AI 已不再可用，并已从分组中移除，可能影响生成效果</span>
+            <span className="unavailable-notice-title">以下 model 已不再可用，并已从分组中移除，可能影响生成效果</span>
           </div>
           <ul className="unavailable-notice-list">
-            {unavailableAiOptionNotices.map((notice) => (
+            {unavailableModelNotices.map((notice) => (
               <li key={notice.groupName}>
-                <span className="unavailable-notice-group">{notice.groupName}</span>：<span className="unavailable-notice-names">{notice.aiOptionNames.join("、")}</span>
+                <span className="unavailable-notice-group">{notice.groupName}</span>：<span className="unavailable-notice-names">{notice.modelNames.join("、")}</span>
               </li>
             ))}
           </ul>
           <div className="unavailable-notice-actions">
-            <CopyButton value={unavailableAiOptionNoticeText} />
+            <CopyButton value={unavailableModelNoticeText} />
             <button
               className="icon-button"
-              disabled={isClearingUnavailableAiOptionNotices}
-              onClick={() => void handleClearUnavailableAiOptionNotices()}
+              disabled={isClearingUnavailableModelNotices}
+              onClick={() => void handleClearUnavailableModelNotices()}
               type="button"
             >
-              {isClearingUnavailableAiOptionNotices ? "确认中…" : "确认"}
+              {isClearingUnavailableModelNotices ? "确认中…" : "确认"}
             </button>
           </div>
         </div>
@@ -308,7 +290,7 @@ export function GroupManagementPage({
           >
             {groups.map((group) => (
               <option key={group.id} value={group.id}>
-                {group.name}（已选 {group.selectedAiOptionCount}）
+                {group.name}（已选 {group.selectedModelCount}）
               </option>
             ))}
           </select>
@@ -400,8 +382,8 @@ export function GroupManagementPage({
               )}
             </div>
             <div className="info-row">
-              <span className="info-label">AI 列表更新时间</span>
-              <span className="info-value">{formatAiOptionCatalogFetchedAt(catalogFetchedAt)}</span>
+              <span className="info-label">model 列表更新时间</span>
+              <span className="info-value">{formatModelCatalogFetchedAt(catalogFetchedAt)}</span>
               <div className="title-bar-actions">
                 <button
                   className="icon-button"
@@ -409,7 +391,7 @@ export function GroupManagementPage({
                   onClick={() => void onRefreshCatalog()}
                   type="button"
                 >
-                  {isRefreshingCatalog ? "刷新中" : "刷新 AI 列表"}
+                  {isRefreshingCatalog ? "刷新中" : "刷新 model 列表"}
                 </button>
                 {refreshFeedback ? (
                   <span className={refreshFeedbackKind === "error" ? "refresh-feedback-error" : "muted"}>
@@ -425,46 +407,28 @@ export function GroupManagementPage({
           <div className="muted ai-option-row">加载中...</div>
         ) : (
           <>
-            {!catalogError && aiOptions.length === 0 ? (
-              <div className="warning-banner">暂无可用 AI，请联网后刷新。</div>
+            {!catalogError && models.length === 0 ? (
+              <div className="warning-banner">暂无可用 model，请联网后刷新。</div>
             ) : null}
-            {!catalogError && aiOptions.length > 0 && selectedAiOptionIds.length === 0 ? (
-              <div className="warning-banner">未选择任何 AI，将无法处理请求，请至少选择一个 AI。</div>
+            {!catalogError && models.length > 0 && selectedModels.length === 0 ? (
+              <div className="warning-banner">未选择任何 model，将无法处理请求，请至少选择一个 model。</div>
             ) : null}
-            {sortedAiOptions.map((option) => {
-              const isSelectable = selectableAiOptionIds.includes(option.aiOptionId);
-              const isSaving = savingAiOptionIds.includes(option.aiOptionId);
-              const statusLabel = option.status === "healthy" ? "可用" : option.status === "degraded" ? "降级" : option.status === "disabled" ? "已禁用" : "未知";
+            {sortedModels.map((model) => {
+              const isSaving = savingModels.includes(model);
               return (
-                <label key={option.aiOptionId} className={`provider-card ai-option-row${!isSelectable ? " ai-option-row--disabled" : ""}`}>
+                <label key={model} className="provider-card ai-option-row">
                   <div className="provider-checkbox">
                     <input
-                      checked={selectedAiOptionIds.includes(option.aiOptionId)}
-                      disabled={!isSelectable || isSaving}
-                      onChange={() => void toggleAiOption(option.aiOptionId)}
+                      checked={selectedModels.includes(model)}
+                      disabled={isSaving}
+                      onChange={() => void toggleModel(model)}
                       type="checkbox"
                     />
                   </div>
                   <div className="ai-option-body">
                     <div className="ai-option-name-row">
-                      <strong className="ai-option-name">{option.publicName}</strong>
-                      <span className={`ai-option-status-badge ai-option-status-badge--${option.status}`}>{statusLabel}</span>
+                      <strong className="ai-option-name">{model}</strong>
                     </div>
-                    <div className="ai-option-meta">
-                      <span>{option.providerLabel}</span>
-                      <span className="ai-option-meta-sep">·</span>
-                      <span>{option.modelLabel}</span>
-                      <span className="ai-option-meta-sep">·</span>
-                      <span>消耗倍率 {option.creditMultiplier}x</span>
-                    </div>
-                    {option.displayConfigSummary ? (
-                      <div className="ai-option-config-summary muted">{option.displayConfigSummary}</div>
-                    ) : null}
-                    {!isSelectable ? (
-                      <div className="ai-option-disable-reason">
-                        {option.disableReason ?? "该 AI 已被管理员禁用，无法选择。"}
-                      </div>
-                    ) : null}
                   </div>
                 </label>
               );

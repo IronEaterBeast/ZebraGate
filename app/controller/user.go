@@ -594,11 +594,33 @@ func GetUserModels(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    models,
+		"success":   true,
+		"message":   "",
+		"data":      models,
+		"modelTags": intersectModelTagsWithAvailable(models),
 	})
 	return
+}
+
+// intersectModelTagsWithAvailable 把每个标签下的 model 名与当前用户可用 model 求交集，
+// 过滤掉用户用不了的 model，避免桌面据此默认勾选到不可用项。
+// 返回结构与存储一致（标签 -> model 名列表），供桌面新建分组时自动选中。
+func intersectModelTagsWithAvailable(availableModels []string) map[string][]string {
+	available := make(map[string]bool, len(availableModels))
+	for _, m := range availableModels {
+		available[m] = true
+	}
+	result := make(map[string][]string)
+	for tag, taggedModels := range setting.GetModelTags() {
+		filtered := make([]string, 0, len(taggedModels))
+		for _, m := range taggedModels {
+			if available[m] {
+				filtered = append(filtered, m)
+			}
+		}
+		result[tag] = filtered
+	}
+	return result
 }
 
 func UpdateUser(c *gin.Context) {

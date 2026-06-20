@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import {
-  clearUnavailableAiOptionNotices,
-  getAiOptionCatalog,
-  getAiOptionSelection,
+  clearUnavailableModelNotices,
+  getModelCatalog,
+  getModelSelection,
   getDesktopRuntimeSnapshot,
-  refreshAiOptionCatalog,
-  saveAiOptionSelection,
+  refreshModelCatalog,
+  refreshModelCatalogSilently,
+  saveModelSelection,
   type DesktopGroupSummary,
-  type PublicAiOption,
-  type UnavailableAiOptionNotice
+  type UnavailableModelNotice
 } from "./lib/api-client";
 import { GroupManagementPage } from "./pages/GroupManagement";
 
@@ -31,11 +31,11 @@ export function GroupManagementWindow() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(() =>
     parseGroupIdFromHash(window.location.hash)
   );
-  const [aiOptions, setAiOptions] = useState<PublicAiOption[]>([]);
-  const [selectedAiOptionIds, setSelectedAiOptionIds] = useState<string[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [catalogFetchedAt, setCatalogFetchedAt] = useState<number | null>(null);
   const [isCatalogStale, setIsCatalogStale] = useState(false);
-  const [unavailableAiOptionNotices, setUnavailableAiOptionNotices] = useState<UnavailableAiOptionNotice[]>([]);
+  const [unavailableModelNotices, setUnavailableModelNotices] = useState<UnavailableModelNotice[]>([]);
   const [refreshFeedback, setRefreshFeedback] = useState<string | null>(null);
   const [refreshFeedbackKind, setRefreshFeedbackKind] = useState<RefreshFeedbackKind>("success");
   const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
@@ -56,17 +56,19 @@ export function GroupManagementWindow() {
 
   useEffect(() => {
     void loadGroups();
-    void loadAiOptionCatalogState();
+    void loadModelCatalogState();
+    // 进入分组管理时主动触发一次拉取（不阻塞首屏渲染，先用缓存渲染再后台更新）。
+    void performSilentCatalogRefresh();
     const interval = window.setInterval(() => {
       void loadGroups();
-      void loadAiOptionCatalogState();
+      void loadModelCatalogState();
     }, GROUP_MANAGEMENT_STATE_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    void loadAiSelectionState();
+    void loadModelSelectionState();
   }, [selectedGroupId]);
 
   async function loadGroups(): Promise<void> {
@@ -84,27 +86,31 @@ export function GroupManagementWindow() {
     }
   }
 
-  function applyAiOptionCatalog(catalog: Awaited<ReturnType<typeof getAiOptionCatalog>>): void {
-    setAiOptions(catalog.aiOptions);
+  // 是否报错由后端推导后放在快照的 catalogError 里（本地有数据则为 null）。
+  // 前端不再自行拼错误文案，避免「拉取失败但本地可用」时误打扰用户。
+  function applyModelCatalog(catalog: Awaited<ReturnType<typeof getModelCatalog>>): void {
+    setModels(catalog.models);
     setCatalogFetchedAt(catalog.fetchedAt);
     setIsCatalogStale(catalog.isStale);
-    setUnavailableAiOptionNotices(catalog.unavailableAiOptionNotices);
+    setUnavailableModelNotices(catalog.unavailableModelNotices);
+    setCatalogError(catalog.catalogError);
   }
 
-  async function loadAiOptionCatalogState(): Promise<void> {
+  async function loadModelCatalogState(): Promise<void> {
     try {
-      applyAiOptionCatalog(await getAiOptionCatalog());
+      applyModelCatalog(await getModelCatalog());
     } catch (loadError) {
+      // 仅在 IPC 本身异常时兜底；远程拉取的成败已体现在快照 catalogError 上。
       setCatalogError(
-        loadError instanceof Error ? loadError.message : "Failed to fetch AI option catalog from ZebraGate API."
+        loadError instanceof Error ? loadError.message : "无法读取本地 model 列表。"
       );
     }
   }
 
-  async function loadAiSelectionState(): Promise<void> {
+  async function loadModelSelectionState(): Promise<void> {
     if (!selectedGroupId) {
-      setAiOptions([]);
-      setSelectedAiOptionIds([]);
+      setModels([]);
+      setSelectedModels([]);
       setIsLoading(false);
       return;
     }
@@ -112,33 +118,33 @@ export function GroupManagementWindow() {
     try {
       setIsLoading(true);
       const [catalog, selection] = await Promise.all([
-        getAiOptionCatalog(),
-        getAiOptionSelection(selectedGroupId)
+        getModelCatalog(),
+        getModelSelection(selectedGroupId)
       ]);
-      applyAiOptionCatalog(catalog);
-      setSelectedAiOptionIds(selection.aiOptionIds);
-      setCatalogError(null);
-      void refreshAiCatalogSilently();
+      applyModelCatalog(catalog);
+      setSelectedModels(selection.models);
+      void performSilentCatalogRefresh();
     } catch (loadError) {
       setCatalogError(
-        loadError instanceof Error ? loadError.message : "Failed to fetch AI option catalog from ZebraGate API."
+        loadError instanceof Error ? loadError.message : "无法读取本地 model 列表。"
       );
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function refreshAiCatalogSilently(): Promise<void> {
+  // 主动静默拉取：后端永不抛错，是否报错由返回快照的 catalogError 决定。
+  async function performSilentCatalogRefresh(): Promise<void> {
     try {
-      const catalog = await refreshAiOptionCatalog();
-      applyAiOptionCatalog(catalog);
+      const catalog = await refreshModelCatalogSilently();
+      applyModelCatalog(catalog);
       if (selectedGroupId) {
-        const selection = await getAiOptionSelection(selectedGroupId);
-        setSelectedAiOptionIds(selection.aiOptionIds);
+        const selection = await getModelSelection(selectedGroupId);
+        setSelectedModels(selection.models);
       }
       await loadGroups();
     } catch {
-      // Automatic refresh failures stay silent; stale age is the only persistent warning.
+      // 拉取走后端静默命令，理论上不抛错；IPC 异常时不打扰用户，由 stale 提示兜底。
     }
   }
 
@@ -146,11 +152,11 @@ export function GroupManagementWindow() {
     try {
       setIsRefreshingCatalog(true);
       setRefreshFeedback(null);
-      const catalog = await refreshAiOptionCatalog();
-      applyAiOptionCatalog(catalog);
+      const catalog = await refreshModelCatalog();
+      applyModelCatalog(catalog);
       if (selectedGroupId) {
-        const selection = await getAiOptionSelection(selectedGroupId);
-        setSelectedAiOptionIds(selection.aiOptionIds);
+        const selection = await getModelSelection(selectedGroupId);
+        setSelectedModels(selection.models);
       }
       await loadGroups();
       setRefreshFeedbackKind("success");
@@ -163,22 +169,22 @@ export function GroupManagementWindow() {
     }
   }
 
-  async function handleSaveSelection(nextSelectedAiOptionIds: string[]): Promise<void> {
+  async function handleSaveSelection(nextSelectedModels: string[]): Promise<void> {
     if (!selectedGroupId) {
       return;
     }
-    const selection = await saveAiOptionSelection(selectedGroupId, nextSelectedAiOptionIds);
-    setSelectedAiOptionIds(selection.aiOptionIds);
+    const selection = await saveModelSelection(selectedGroupId, nextSelectedModels);
+    setSelectedModels(selection.models);
     setGroups((current) =>
       current.map((group) =>
-        group.id === selectedGroupId ? { ...group, selectedAiOptionCount: selection.aiOptionIds.length } : group
+        group.id === selectedGroupId ? { ...group, selectedModelCount: selection.models.length } : group
       )
     );
   }
 
-  async function handleClearUnavailableAiOptionNotices(): Promise<void> {
-    await clearUnavailableAiOptionNotices();
-    setUnavailableAiOptionNotices([]);
+  async function handleClearUnavailableModelNotices(): Promise<void> {
+    await clearUnavailableModelNotices();
+    setUnavailableModelNotices([]);
   }
 
   function handleGroupCreated(group: DesktopGroupSummary): void {
@@ -204,7 +210,7 @@ export function GroupManagementWindow() {
 
   return (
     <GroupManagementPage
-      aiOptions={aiOptions}
+      models={models}
       catalogError={catalogError}
       catalogFetchedAt={catalogFetchedAt}
       groups={groups}
@@ -217,12 +223,12 @@ export function GroupManagementWindow() {
       onRefreshCatalog={handleRefreshCatalog}
       onSaveSelection={handleSaveSelection}
       onSelectGroup={setSelectedGroupId}
-      onClearUnavailableAiOptionNotices={handleClearUnavailableAiOptionNotices}
+      onClearUnavailableModelNotices={handleClearUnavailableModelNotices}
       refreshFeedback={refreshFeedback}
       refreshFeedbackKind={refreshFeedbackKind}
-      selectedAiOptionIds={selectedAiOptionIds}
+      selectedModels={selectedModels}
       selectedGroup={selectedGroup}
-      unavailableAiOptionNotices={unavailableAiOptionNotices}
+      unavailableModelNotices={unavailableModelNotices}
     />
   );
 }

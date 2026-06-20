@@ -7,6 +7,7 @@ import {
   logout,
   openGroupManagementWindow,
   openLoginUrl,
+  refreshModelCatalogSilently,
   type AuthStatusSnapshot,
   type DesktopGroupSummary,
   type DesktopRuntimeSnapshot
@@ -133,6 +134,9 @@ export default function App() {
     }
 
     void refreshDesktopState();
+    // 首屏完成后主动暖一次 model 列表缓存（fire-and-forget）：后端静默拉取，
+    // 失败有缓存则保留旧数据并退避重试，用户随后进入分组管理即有数据可用。
+    void refreshModelCatalogSilently();
   }
 
   async function refreshAuthStatus(): Promise<void> {
@@ -215,7 +219,7 @@ export default function App() {
         onRefresh={refreshAll}
         onSwitchGroup={handleSwitchGroup}
         runtimeSnapshot={runtimeSnapshot}
-        selectedAiCount={viewedGroup?.selectedAiOptionCount ?? 0}
+        selectedAiCount={viewedGroup?.selectedModelCount ?? 0}
         viewedGroup={viewedGroup}
       />
     </main>

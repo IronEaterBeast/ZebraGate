@@ -17,7 +17,6 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "2",
-    "@zebragate/shared": "workspace:*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

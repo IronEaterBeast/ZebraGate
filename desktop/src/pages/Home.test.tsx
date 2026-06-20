@@ -23,7 +23,7 @@ function createRuntimeSnapshot(): DesktopRuntimeSnapshot {
         localKey: "zg-local-test",
         lastUsedAt: null,
         isDefault: true,
-        selectedAiOptionCount: 0
+        selectedModelCount: 0
       }
     ]
   };
@@ -100,7 +100,7 @@ describe("HomePage", () => {
         localKey: "zg-local-empty",
         lastUsedAt: null,
         isDefault: false,
-        selectedAiOptionCount: 0
+        selectedModelCount: 0
       },
       {
         id: "group-ready",
@@ -108,7 +108,7 @@ describe("HomePage", () => {
         localKey: "zg-local-ready",
         lastUsedAt: null,
         isDefault: true,
-        selectedAiOptionCount: 2
+        selectedModelCount: 2
       }
     ];
 
@@ -138,7 +138,7 @@ describe("HomePage", () => {
     runtimeSnapshot.proxyStatus.running = false;
     runtimeSnapshot.proxyStatus.lastRequestStatus = "Local proxy failed to start.";
     runtimeSnapshot.proxyStatus.lastErrorMessage = "Port is already in use.";
-    runtimeSnapshot.groups[0].selectedAiOptionCount = 1;
+    runtimeSnapshot.groups[0].selectedModelCount = 1;
 
     expect(
       buildCurrentStatusReport({
@@ -155,7 +155,7 @@ describe("HomePage", () => {
     runtimeSnapshot.proxyStatus.running = false;
     runtimeSnapshot.proxyStatus.lastRequestStatus = "Local proxy is idle.";
     runtimeSnapshot.proxyStatus.lastErrorMessage = null;
-    runtimeSnapshot.groups[0].selectedAiOptionCount = 1;
+    runtimeSnapshot.groups[0].selectedModelCount = 1;
 
     expect(
       buildCurrentStatusReport({
@@ -173,7 +173,7 @@ describe("HomePage", () => {
     runtimeSnapshot.credits = null;
     runtimeSnapshot.remoteApiErrorMessage =
       "Failed to fetch credits balance from ZebraGate API: connection refused";
-    runtimeSnapshot.groups[0].selectedAiOptionCount = 1;
+    runtimeSnapshot.groups[0].selectedModelCount = 1;
 
     expect(
       buildCurrentStatusReport({
@@ -190,7 +190,7 @@ describe("HomePage", () => {
   it("renders current issues in the status bar without showing floating banners", () => {
     const runtimeSnapshot = createRuntimeSnapshot();
     runtimeSnapshot.proxyStatus.running = true;
-    runtimeSnapshot.groups[0].selectedAiOptionCount = 1;
+    runtimeSnapshot.groups[0].selectedModelCount = 1;
     runtimeSnapshot.remoteApiErrorMessage = "connection refused";
     const html = renderToStaticMarkup(
       <HomePage
@@ -220,7 +220,7 @@ describe("HomePage", () => {
     runtimeSnapshot.proxyStatus.lastRequestStatus = "Local proxy failed to start.";
     runtimeSnapshot.proxyStatus.lastErrorMessage = "Port is already in use.";
     runtimeSnapshot.remoteApiErrorMessage = "connection refused";
-    runtimeSnapshot.groups[0].selectedAiOptionCount = 1;
+    runtimeSnapshot.groups[0].selectedModelCount = 1;
     const html = renderToStaticMarkup(
       <HomePage
         authStatus={{ loggedIn: true, email: "user@example.com", userId: "user-1" }}

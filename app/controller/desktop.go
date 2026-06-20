@@ -99,6 +99,27 @@ func DesktopTraceEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"recorded": true})
 }
 
+// DesktopCreditsBalance 返回当前桌面用户的额度余额，供桌面客户端主界面展示。
+// 鉴权由 DesktopAuth 中间件完成，用户 id 已写入上下文。
+//
+// 按既定约定直接返回 app/ 的 quota 原值作为 balance。
+// 注意：桌面客户端的 balance 字段为 i32，若用户 quota 原值超过 i32 范围
+// （约对应 4294 美元额度），桌面侧反序列化可能溢出，这是当前已知限制。
+func DesktopCreditsBalance(c *gin.Context) {
+	id := c.GetInt("id")
+	quota, err := model.GetUserQuota(id, false)
+	if err != nil {
+		common.SysLog("DesktopCreditsBalance GetUserQuota error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+			"message": "Failed to load credits balance.",
+			"code":    "INTERNAL_ERROR",
+			"type":    "invalid_request_error",
+		}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"balance": quota})
+}
+
 func desktopUserIdString(id int) string {
 	return strconv.Itoa(id)
 }

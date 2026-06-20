@@ -22,7 +22,7 @@ function createRuntimeSnapshot(): DesktopRuntimeSnapshot {
         localKey: "zg-local-test",
         lastUsedAt: null,
         isDefault: true,
-        selectedAiOptionCount: 1
+        selectedModelCount: 1
       }
     ]
   };

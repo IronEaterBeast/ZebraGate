@@ -28,6 +28,7 @@ import {
   MessageSquare,
   Radio,
   Settings,
+  Tags,
   Ticket,
   User,
   Users,
@@ -125,6 +126,11 @@ export function useSidebarData(): SidebarData {
             title: t('Models'),
             url: '/models/metadata',
             icon: Box,
+          },
+          {
+            title: t('Model Tags'),
+            url: '/model-tags',
+            icon: Tags,
           },
           {
             title: t('Users'),

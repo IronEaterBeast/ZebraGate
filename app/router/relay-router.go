@@ -189,7 +189,8 @@ func SetRelayRouter(router *gin.Engine) {
 	// ZebraGate 桌面客户端转发入口。
 	// 桌面客户端携带用户 access token（而非 API 令牌），经 DesktopAuth 映射到用户后，
 	// 复用既有的 Distribute + Relay 完成渠道调用、日志记录与扣费。
-	// 第一阶段忽略请求体中的 ai_option_ids，直接按请求体 model 走既有渠道分发。
+	// 请求体中的 model 直接进入标准 Distribute 按模型分发（与服务器既有「渠道 + 模型」
+	// 运作方式一致）；分组的「可用 model 白名单」校验在桌面端完成，服务器侧不再解析。
 	desktopRouter := router.Group("/v1/openai")
 	desktopRouter.Use(middleware.RouteTag("relay"))
 	desktopRouter.Use(middleware.SystemPerformanceCheck())
@@ -222,6 +223,14 @@ func SetRelayRouter(router *gin.Engine) {
 	desktopAuthRouter.Use(middleware.RouteTag("relay"))
 	{
 		desktopAuthRouter.POST("/refresh", controller.DesktopAuthRefresh)
+	}
+
+	// 桌面额度查询：需桌面鉴权，返回当前用户额度供主界面展示。
+	desktopCreditsRouter := router.Group("/v1/credits")
+	desktopCreditsRouter.Use(middleware.RouteTag("relay"))
+	desktopCreditsRouter.Use(middleware.DesktopAuth())
+	{
+		desktopCreditsRouter.GET("/balance", controller.DesktopCreditsBalance)
 	}
 
 	relayGeminiRouter := router.Group("/v1beta")

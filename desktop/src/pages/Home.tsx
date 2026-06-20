@@ -137,7 +137,7 @@ export function HomePage({
             >
               {groups.map((group) => (
                 <option key={group.id} value={group.id}>
-                  {group.name}（已选 {group.selectedAiOptionCount}）
+                  {group.name}（已选 {group.selectedModelCount}）
                 </option>
               ))}
             </select>

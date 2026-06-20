@@ -39,8 +39,6 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 const DEFAULT_LOCAL_PROXY_PORT: u16 = 7788;
-const DEFAULT_REMOTE_API_BASE_URL: &str = "http://localhost:3001";
-const DEFAULT_WEB_BASE_URL: &str = "http://localhost:3000";
 const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
 const DEFAULT_MODEL: &str = "zebragate_model";
 const LOCAL_PROXY_HOST: &str = "127.0.0.1";
@@ -55,14 +53,26 @@ const REMOTE_HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
 /// balance). Applied per request so it never truncates streamed chat completions.
 const REMOTE_METADATA_REQUEST_TIMEOUT_SECS: u64 = 15;
 const DESKTOP_CONFIG_FILENAME: &str = "desktop-config.json";
-const AI_OPTION_CATALOG_CACHE_FILENAME: &str = "ai-options-catalog.cache";
-const AI_OPTION_CATALOG_CACHE_VERSION: u32 = 1;
-const AI_OPTION_CATALOG_REFRESH_INTERVAL_SECS: u64 = 60 * 60;
-const AI_OPTION_CATALOG_STALE_AFTER_SECS: i64 = 2 * 24 * 60 * 60;
+const MODEL_CATALOG_CACHE_FILENAME: &str = "models-catalog.cache";
+const MODEL_CATALOG_CACHE_VERSION: u32 = 2;
+const MODEL_CATALOG_REFRESH_INTERVAL_SECS: u64 = 60 * 60;
+const MODEL_CATALOG_STALE_AFTER_SECS: i64 = 2 * 24 * 60 * 60;
+/// 拉取失败后的退避重试节奏（秒），逐步拉长，封顶后并入正常刷新周期。
+/// 解决「首次安装即拉取失败要等一个完整周期」的体验问题：失败后会在数秒内
+/// 自动重试，网络一恢复就能拿到列表；持续断网则间隔逐步拉长，避免空转打扰。
+const MODEL_CATALOG_BACKOFF_SCHEDULE_SECS: [u64; 5] = [5, 15, 30, 60, 300];
+/// 拉取失败、且本地无任何可用 model 时给用户的提示。此时用户完全无法使用，
+/// 必须明确告知正在重试，而非让其对着空界面干瞪眼。
+const MODEL_CATALOG_UNAVAILABLE_RETRYING_MESSAGE: &str =
+    "暂时无法获取 model 列表，正在自动重试…请检查网络连接。";
+/// 拉取成功但服务器返回空列表时给用户的提示。这是服务器的权威结果（该账号当前
+/// 确无可用 model），不是网络问题，需如实告知而非静默。
+const MODEL_CATALOG_EMPTY_MESSAGE: &str =
+    "服务器当前没有可用的 model，请确认账号已开通可用 model 后重试。";
 const AUTH_SESSION_FILENAME: &str = "auth-session.bin";
 const AUTH_KEY_FILENAME: &str = "auth-key.bin";
-const NO_AI_OPTION_SELECTED_USER_MESSAGE: &str =
-  "No AI option is selected in ZebraGate Desktop. Please select at least one AI option and try again.";
+const NO_MODEL_SELECTED_USER_MESSAGE: &str =
+  "No model is selected in ZebraGate Desktop. Please select at least one model and try again.";
 const NOT_LOGGED_IN_USER_MESSAGE: &str =
     "You are not signed in to ZebraGate Desktop. Please sign in and try again.";
 /// How long before the access token's `expires_at` we proactively refresh it,
@@ -176,12 +186,23 @@ fn apply_initial_window_geometry(window: &tauri::WebviewWindow) {
         eprintln!("Failed to show desktop window: {error}");
     }
 
+    // The window now has its real size/position and a loaded page. From here on
+    // it is safe for tray clicks to show it directly.
+    MAIN_WINDOW_READY.store(true, Ordering::Relaxed);
+
     update_tray_menu_for_main_window(window.app_handle());
 }
 
 fn work_area_bottom_aligned_y(work_area_y: i32, work_area_height: i32, window_height: i32) -> i32 {
     work_area_y + (work_area_height - window_height - WINDOW_GEOMETRY_MARGIN).max(0)
 }
+
+/// Whether the main window has finished its first page load and had its initial
+/// geometry applied at least once (via `apply_initial_window_geometry`). Until
+/// then, showing the window would reveal a blank, mis-positioned (top-left)
+/// webview, so tray-triggered `show` is suppressed while this is `false`.
+static MAIN_WINDOW_READY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Holds the tray's "打开窗口/隐藏窗口" menu item so its label can be updated
 /// when the main window's visibility changes.
@@ -253,7 +274,19 @@ fn update_tray_menu_for_main_window(app_handle: &AppHandle) {
         .set_text(tray_toggle_menu_text(is_main_window_visible(app_handle)));
 }
 
+/// Decides whether a tray-triggered request to show the main window should be
+/// honored. Before the first page load finishes (`window_ready == false`) the
+/// window has neither its real geometry nor any rendered content, so showing it
+/// would flash a blank window in the top-left corner; the request is suppressed
+/// until `apply_initial_window_geometry` reveals it correctly on page load.
+fn should_show_main_window_on_request(window_ready: bool) -> bool {
+    window_ready
+}
+
 fn show_main_window(app_handle: &AppHandle) {
+    if !should_show_main_window_on_request(MAIN_WINDOW_READY.load(Ordering::Relaxed)) {
+        return;
+    }
     if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.set_focus();
@@ -358,7 +391,7 @@ enum LocalPortBindingStrategy {
 struct DesktopSharedState {
     client: Client,
     config_path: Arc<PathBuf>,
-    ai_option_catalog_cache_path: Arc<PathBuf>,
+    model_catalog_cache_path: Arc<PathBuf>,
     auth_session_path: Arc<PathBuf>,
     auth_key_path: Arc<PathBuf>,
     privacy_keywords: Arc<Vec<String>>,
@@ -489,7 +522,22 @@ struct DesktopRuntimeState {
     proxy_status: LocalProxyStatusSnapshot,
     shutdown_tx: Option<oneshot::Sender<()>>,
     auth_session: Option<AuthSession>,
-    unavailable_ai_option_notices: Vec<UnavailableAiOptionNotice>,
+    unavailable_model_notices: Vec<UnavailableModelNotice>,
+    /// 最近一次远程拉取 model 列表的结果。用于在快照里按「网络结果 × 本地是否有数据」
+    /// 决定是否向用户报错：失败但本地仍有缓存数据时静默（旧数据大概率仍可用），
+    /// 仅在「失败且本地无可用 model」或「成功但为空」时才报错。
+    last_catalog_refresh: CatalogRefreshState,
+}
+
+/// 最近一次远程拉取 model 列表的结果状态（不含「成功非空」——成功非空时无错误）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CatalogRefreshState {
+    /// 尚未拉取过，或最近一次成功且非空：无需报错。
+    None,
+    /// 最近一次拉取失败（网络/超时/鉴权/解析等）。
+    Failed,
+    /// 最近一次拉取成功但服务器返回空列表（权威结果）。
+    Empty,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,7 +578,12 @@ struct DesktopGroup {
     #[serde(default)]
     last_used_at: Option<i64>,
     #[serde(default)]
-    selected_ai_option_ids: Vec<String>,
+    selected_models: Vec<String>,
+    /// 是否已应用过「默认」标签的自动勾选。首次自动建的 default 分组建立时为 false，
+    /// 待 model 目录首次拉取成功后据此一次性填入默认 model；用户手动建的分组在
+    /// 创建时即填入并置为 true。避免对用户已手动清空的分组反复回填默认 model。
+    #[serde(default)]
+    defaults_applied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -637,7 +690,7 @@ struct DesktopGroupSummary {
     local_key: String,
     last_used_at: Option<i64>,
     is_default: bool,
-    selected_ai_option_count: usize,
+    selected_model_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -678,55 +731,47 @@ fn build_group_summaries(config: &DesktopConfig) -> Vec<DesktopGroupSummary> {
             local_key: group.local_key.clone(),
             last_used_at: group.last_used_at,
             is_default: group.id == config.default_group_id,
-            selected_ai_option_count: group.selected_ai_option_ids.len(),
+            selected_model_count: group.selected_models.len(),
         })
         .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AiOptionSelectionSnapshot {
-    ai_option_ids: Vec<String>,
+struct ModelSelectionSnapshot {
+    models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SelectableAiOption {
-    ai_option_id: String,
-    provider_label: String,
-    model_label: String,
-    public_name: String,
-    display_config_summary: String,
-    display_badges: Vec<Value>,
-    credit_multiplier: f64,
-    is_recommended: bool,
-    status: ProviderStatus,
-    disable_reason: Option<String>,
-    sort_order: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AiOptionCatalogCache {
+struct ModelCatalogCache {
     version: u32,
     fetched_at: i64,
-    ai_options: Vec<SelectableAiOption>,
+    models: Vec<String>,
+    /// 「默认」标签下、且当前用户可用的 model 名（由后端求过交集）。
+    /// 新建分组（含首次自动建的 default 分组）据此自动勾选，降低试用门槛。
+    #[serde(default)]
+    default_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AiOptionCatalogSnapshot {
-    ai_options: Vec<SelectableAiOption>,
+struct ModelCatalogSnapshot {
+    models: Vec<String>,
     fetched_at: Option<i64>,
     is_stale: bool,
-    unavailable_ai_option_notices: Vec<UnavailableAiOptionNotice>,
+    unavailable_model_notices: Vec<UnavailableModelNotice>,
+    /// 仅在「用户当前实际无法使用」时才非空：本地无可用 model 且最近一次拉取
+    /// 失败（正在重试）或服务器返回空（权威无 model）。本地有缓存数据时即使
+    /// 最近拉取失败也保持 None——旧数据大概率仍可用，不打扰用户。
+    catalog_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UnavailableAiOptionNotice {
+struct UnavailableModelNotice {
     group_name: String,
-    ai_option_names: Vec<String>,
+    model_names: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -736,20 +781,25 @@ struct EncryptedLocalPayload {
     ciphertext: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum ProviderStatus {
-    Healthy,
-    Degraded,
-    Disabled,
-    Unknown,
+/// Response shape of `/api/user/models`: the available model name list lives
+/// in `data`. `modelTags` 是「标签 -> model 名列表」映射（已与当前用户可用 model
+/// 求过交集），desktop 据此在新建分组时自动勾选默认 model。
+#[derive(Debug, Serialize, Deserialize)]
+struct UserModelsResponse {
+    #[serde(default)]
+    data: Vec<String>,
+    #[serde(rename = "modelTags", default)]
+    model_tags: HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct AiOptionCatalogResponse {
-    #[serde(rename = "aiOptions")]
-    ai_options: Vec<SelectableAiOption>,
+/// 一次 model 目录拉取的结果：可用 model 名列表 + 标签映射。
+struct FetchedModelCatalog {
+    models: Vec<String>,
+    model_tags: HashMap<String, Vec<String>>,
 }
+
+/// 与后端 setting.ModelTagDefault 对齐：默认标签键名。
+const MODEL_TAG_DEFAULT: &str = "default";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RemoteCreditsBalanceResponse {
@@ -797,8 +847,35 @@ struct OpenAiErrorBody {
     error_type: String,
 }
 
+/// Logs how long this stage took since the previous startup checkpoint (`+Nms`)
+/// alongside the cumulative time since process start, to help locate where the
+/// gap between cargo's `Running ...` line and the window actually appearing is
+/// spent (WebView2 init vs. `setup` work vs. frontend page load).
+fn log_startup_elapsed(stage: &str) {
+    let total = STARTUP_INSTANT.elapsed();
+    let mut last = LAST_STARTUP_CHECKPOINT.lock().unwrap();
+    let delta = total.saturating_sub(*last);
+    *last = total;
+    eprintln!(
+        "[startup] {stage}: +{} ms (total {} ms)",
+        delta.as_millis(),
+        total.as_millis()
+    );
+}
+
+static STARTUP_INSTANT: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+/// Elapsed time at the previous `log_startup_elapsed` call, used to compute the
+/// per-stage delta.
+static LAST_STARTUP_CHECKPOINT: std::sync::Mutex<std::time::Duration> =
+    std::sync::Mutex::new(std::time::Duration::ZERO);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize the startup clock as early as possible.
+    log_startup_elapsed("run() entered");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -811,12 +888,14 @@ pub fn run() {
             if webview.label() == MAIN_WINDOW_LABEL
                 && payload.event() == tauri::webview::PageLoadEvent::Finished
             {
+                log_startup_elapsed("main window page load finished (about to show window)");
                 if let Some(window) = webview.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
                     apply_initial_window_geometry(&window);
                 }
             }
         })
         .setup(|app| {
+            log_startup_elapsed("setup() started");
             let config_path = get_desktop_config_path(&app.handle()).map_err(io::Error::other)?;
             let config =
                 load_or_initialize_desktop_config(&config_path).map_err(io::Error::other)?;
@@ -834,7 +913,7 @@ pub fn run() {
                 .unwrap_or_else(|| PathBuf::from("."));
             let auth_session_path = config_dir.join(AUTH_SESSION_FILENAME);
             let auth_key_path = config_dir.join(AUTH_KEY_FILENAME);
-            let ai_option_catalog_cache_path = config_dir.join(AI_OPTION_CATALOG_CACHE_FILENAME);
+            let model_catalog_cache_path = config_dir.join(MODEL_CATALOG_CACHE_FILENAME);
             let auth_session =
                 load_auth_session(&auth_session_path, &auth_key_path).map_err(io::Error::other)?;
             let config = match auth_session
@@ -854,7 +933,7 @@ pub fn run() {
                         io::Error::other(format!("Failed to build desktop HTTP client: {error}"))
                     })?,
                 config_path: Arc::new(config_path),
-                ai_option_catalog_cache_path: Arc::new(ai_option_catalog_cache_path),
+                model_catalog_cache_path: Arc::new(model_catalog_cache_path),
                 auth_session_path: Arc::new(auth_session_path),
                 auth_key_path: Arc::new(auth_key_path),
                 privacy_keywords: Arc::new(load_privacy_keywords().map_err(io::Error::other)?),
@@ -863,14 +942,15 @@ pub fn run() {
                     proxy_status,
                     shutdown_tx: None,
                     auth_session,
-                    unavailable_ai_option_notices: Vec::new(),
+                    unavailable_model_notices: Vec::new(),
+                    last_catalog_refresh: CatalogRefreshState::None,
                 })),
                 active_request_count: Arc::new(AtomicU32::new(0)),
             };
 
             let refresh_state = state.clone();
             app.manage(state);
-            spawn_ai_option_catalog_refresh_loop(refresh_state);
+            spawn_model_catalog_refresh_loop(refresh_state);
 
             setup_system_tray(app)?;
 
@@ -882,6 +962,7 @@ pub fn run() {
                 }
             });
 
+            log_startup_elapsed("setup() finished");
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -913,11 +994,12 @@ pub fn run() {
             start_local_proxy,
             stop_local_proxy,
             get_local_proxy_status,
-            get_ai_option_catalog,
-            refresh_ai_option_catalog,
-            clear_unavailable_ai_option_notices,
-            get_ai_option_selection,
-            save_ai_option_selection,
+            get_model_catalog,
+            refresh_model_catalog,
+            refresh_model_catalog_silently,
+            clear_unavailable_model_notices,
+            get_model_selection,
+            save_model_selection,
             list_groups,
             create_group,
             rename_group,
@@ -956,12 +1038,9 @@ async fn get_desktop_bootstrap_snapshot(
 async fn get_desktop_runtime_snapshot(
     state: TauriState<'_, DesktopSharedState>,
 ) -> Result<DesktopRuntimeSnapshot, String> {
-    let config = refresh_effective_ai_option_selections(&state, &state.inner).await?;
+    let config = refresh_effective_model_selections(&state, &state.inner).await?;
     let (credits, remote_api_error_message) =
-        match fetch_remote_credits_balance(state.inner(), &config).await {
-            Ok(credits) => (Some(credits), None),
-            Err(error) => (None, Some(error)),
-        };
+        resolve_remote_credits(state.inner(), &config).await;
     let proxy_status = {
         let runtime = state.inner.lock().await;
         runtime.proxy_status.clone()
@@ -1016,7 +1095,7 @@ async fn start_local_proxy(
             .config
             .groups
             .iter()
-            .all(|group| group.selected_ai_option_ids.is_empty())
+            .all(|group| group.selected_models.is_empty())
         {
             Some(
         "尚未选择 AI。本地服务可以启动，但客户端的请求会被本地拒绝，请选择至少一个 AI 选项。"
@@ -1042,7 +1121,7 @@ async fn start_local_proxy(
         state.inner.clone(),
         state.client.clone(),
         state.config_path.clone(),
-        state.ai_option_catalog_cache_path.clone(),
+        state.model_catalog_cache_path.clone(),
         state.auth_session_path.clone(),
         state.auth_key_path.clone(),
         state.privacy_keywords.clone(),
@@ -1143,50 +1222,68 @@ async fn get_local_proxy_status(
 }
 
 #[tauri::command]
-async fn get_ai_option_catalog(
+async fn get_model_catalog(
     state: TauriState<'_, DesktopSharedState>,
-) -> Result<AiOptionCatalogSnapshot, String> {
-    Ok(build_ai_option_catalog_snapshot(state.inner()).await)
+) -> Result<ModelCatalogSnapshot, String> {
+    Ok(build_model_catalog_snapshot(state.inner()).await)
+}
+
+/// 用户手动点击「刷新 model 列表」：需要明确的成败反馈，因此失败时返回 Err
+/// 让按钮显示「刷新失败」。同时更新拉取状态，保持与后台循环一致。
+#[tauri::command]
+async fn refresh_model_catalog(
+    state: TauriState<'_, DesktopSharedState>,
+) -> Result<ModelCatalogSnapshot, String> {
+    match try_refresh_model_catalog(state.inner()).await {
+        CatalogRefreshOutcome::Failed => Err("刷新失败，请稍后重试".to_string()),
+        CatalogRefreshOutcome::SkippedLoggedOut => Err("尚未登录，请登录后重试".to_string()),
+        CatalogRefreshOutcome::Refreshed { .. } => {
+            Ok(build_model_catalog_snapshot(state.inner()).await)
+        }
+    }
+}
+
+/// 进入首屏 / 分组管理时由前端主动触发的拉取：无论成败都不向前端抛错，
+/// 是否需要给用户报错完全由返回快照里的 `catalog_error` 决定（本地有缓存
+/// 时即使失败也静默）。
+#[tauri::command]
+async fn refresh_model_catalog_silently(
+    state: TauriState<'_, DesktopSharedState>,
+) -> Result<ModelCatalogSnapshot, String> {
+    let _ = try_refresh_model_catalog(state.inner()).await;
+    Ok(build_model_catalog_snapshot(state.inner()).await)
 }
 
 #[tauri::command]
-async fn refresh_ai_option_catalog(
-    state: TauriState<'_, DesktopSharedState>,
-) -> Result<AiOptionCatalogSnapshot, String> {
-    refresh_ai_option_catalog_from_remote(state.inner()).await?;
-    Ok(build_ai_option_catalog_snapshot(state.inner()).await)
-}
-
-#[tauri::command]
-async fn clear_unavailable_ai_option_notices(
+async fn clear_unavailable_model_notices(
     state: TauriState<'_, DesktopSharedState>,
 ) -> Result<(), String> {
     let mut runtime = state.inner.lock().await;
-    runtime.unavailable_ai_option_notices.clear();
+    runtime.unavailable_model_notices.clear();
     Ok(())
 }
 
 #[tauri::command]
-async fn get_ai_option_selection(
+async fn get_model_selection(
     state: TauriState<'_, DesktopSharedState>,
     group_id: String,
-) -> Result<AiOptionSelectionSnapshot, String> {
-    let config = refresh_effective_ai_option_selections(&state, &state.inner).await?;
+) -> Result<ModelSelectionSnapshot, String> {
+    let config = refresh_effective_model_selections(&state, &state.inner).await?;
     let group = config
         .group(&group_id)
         .ok_or_else(|| format!("Unknown group id: {group_id}."))?;
-    Ok(AiOptionSelectionSnapshot {
-        ai_option_ids: group.selected_ai_option_ids.clone(),
+    Ok(ModelSelectionSnapshot {
+        models: group.selected_models.clone(),
     })
 }
 
 #[tauri::command]
-async fn save_ai_option_selection(
+async fn save_model_selection(
     app_handle: AppHandle,
     state: TauriState<'_, DesktopSharedState>,
     group_id: String,
-    ai_option_ids: Vec<String>,
-) -> Result<AiOptionSelectionSnapshot, String> {
+    models: Vec<String>,
+) -> Result<ModelSelectionSnapshot, String> {
     let config = {
         let runtime = state.inner.lock().await;
         runtime.config.clone()
@@ -1196,10 +1293,10 @@ async fn save_ai_option_selection(
         return Err(format!("Unknown group id: {group_id}."));
     }
 
-    let deduped_ai_option_ids = dedupe_ai_option_ids(ai_option_ids);
-    if !deduped_ai_option_ids.is_empty() {
-        let cache = read_ai_option_catalog_cache(state.inner()).await?;
-        validate_ai_option_selection_against_catalog(&deduped_ai_option_ids, cache.as_ref())?;
+    let deduped_models = dedupe_models(models);
+    if !deduped_models.is_empty() {
+        let cache = read_model_catalog_cache(state.inner()).await?;
+        validate_model_selection_against_catalog(&deduped_models, cache.as_ref())?;
     }
 
     {
@@ -1208,14 +1305,14 @@ async fn save_ai_option_selection(
             .config
             .group_mut(&group_id)
             .ok_or_else(|| format!("Unknown group id: {group_id}."))?;
-        group.selected_ai_option_ids = deduped_ai_option_ids.clone();
+        group.selected_models = deduped_models.clone();
         persist_desktop_config(state.config_path.as_path(), &runtime.config)?;
     }
 
     emit_desktop_groups_changed(&app_handle);
 
-    Ok(AiOptionSelectionSnapshot {
-        ai_option_ids: deduped_ai_option_ids,
+    Ok(ModelSelectionSnapshot {
+        models: deduped_models,
     })
 }
 
@@ -1223,7 +1320,7 @@ async fn save_ai_option_selection(
 async fn list_groups(
     state: TauriState<'_, DesktopSharedState>,
 ) -> Result<Vec<DesktopGroupSummary>, String> {
-    let config = refresh_effective_ai_option_selections(&state, &state.inner).await?;
+    let config = refresh_effective_model_selections(&state, &state.inner).await?;
     Ok(build_group_summaries(&config))
 }
 
@@ -1238,23 +1335,22 @@ async fn create_group(
         return Err("Group name must not be empty.".to_string());
     }
 
-    let recommended_ai_option_ids = {
-        let config = {
-            let runtime = state.inner.lock().await;
-            runtime.config.clone()
-        };
-        fetch_ai_option_catalog(state.inner(), &config)
-            .await
-            .map(|ai_options| recommended_ai_option_ids(&ai_options))
-            .unwrap_or_default()
-    };
+    // 新建分组自动勾选「默认」标签下的 model（若本地缓存可用），降低用户首次
+    // 试用的操作成本；离线/无缓存时退回为空，由用户自行勾选。
+    let default_models = read_model_catalog_cache(state.inner())
+        .await
+        .ok()
+        .flatten()
+        .map(|cache| cache.default_models)
+        .unwrap_or_default();
 
     let new_group = DesktopGroup {
         id: Uuid::new_v4().to_string(),
         name: trimmed_name.to_string(),
         local_key: format!("zg-local-{}", Uuid::new_v4().simple()),
         last_used_at: None,
-        selected_ai_option_ids: recommended_ai_option_ids,
+        selected_models: default_models,
+        defaults_applied: true,
     };
 
     let mut runtime = state.inner.lock().await;
@@ -1268,7 +1364,7 @@ async fn create_group(
         local_key: new_group.local_key,
         last_used_at: new_group.last_used_at,
         is_default: false,
-        selected_ai_option_count: new_group.selected_ai_option_ids.len(),
+        selected_model_count: new_group.selected_models.len(),
     })
 }
 
@@ -1428,7 +1524,7 @@ async fn open_login_url(
         runtime.config.last_port.unwrap_or(DEFAULT_LOCAL_PROXY_PORT)
     };
     let callback_url = format!("{}/auth/callback", build_local_address(port));
-    let web_base_url = resolve_web_base_url();
+    let web_base_url = resolve_web_base_url()?;
     let login_url = format!(
         "{}/desktop-login?callback={}",
         web_base_url.trim_end_matches('/'),
@@ -1556,7 +1652,7 @@ fn build_local_proxy_router(
     inner: Arc<Mutex<DesktopRuntimeState>>,
     client: Client,
     config_path: Arc<PathBuf>,
-    ai_option_catalog_cache_path: Arc<PathBuf>,
+    model_catalog_cache_path: Arc<PathBuf>,
     auth_session_path: Arc<PathBuf>,
     auth_key_path: Arc<PathBuf>,
     privacy_keywords: Arc<Vec<String>>,
@@ -1565,7 +1661,7 @@ fn build_local_proxy_router(
     let state = DesktopSharedState {
         client,
         config_path,
-        ai_option_catalog_cache_path,
+        model_catalog_cache_path,
         auth_session_path,
         auth_key_path,
         privacy_keywords,
@@ -1616,25 +1712,16 @@ async fn auth_callback_handler(
         let mut runtime = state.inner.lock().await;
         runtime.auth_session = Some(session.clone());
     }
-    let _ = refresh_ai_option_catalog_from_remote(&state).await;
-    let recommended_ai_option_ids = read_ai_option_catalog_cache(&state)
-        .await
-        .ok()
-        .flatten()
-        .map(|cache| recommended_ai_option_ids(&cache.ai_options))
-        .unwrap_or_default();
+    let _ = refresh_model_catalog_from_remote(&state).await;
 
     {
         let mut runtime = state.inner.lock().await;
         let migrate_existing_anonymous = runtime.config.current_user_id.is_none();
+        // 新用户/新分组默认不预选 model，由用户自行勾选。匿名期已有的分组配置在登录后保留。
         let fallback_user_config = if migrate_existing_anonymous {
-            let mut user_config = runtime.config.user_config();
-            fill_single_empty_default_group_selection(&mut user_config, &recommended_ai_option_ids);
-            Some(user_config)
+            Some(runtime.config.user_config())
         } else {
-            Some(build_default_user_config_with_ai_option_ids(
-                &recommended_ai_option_ids,
-            ))
+            Some(build_default_user_config())
         };
         let next_config = match load_desktop_config_for_user_with_fallback(
             state.config_path.as_path(),
@@ -1775,7 +1862,7 @@ async fn local_chat_completions_handler(
         return openai_error_response(StatusCode::UNAUTHORIZED, &message, "NOT_LOGGED_IN");
     }
 
-    let effective_config = match refresh_effective_ai_option_selections(&state, &state.inner).await
+    let effective_config = match refresh_effective_model_selections(&state, &state.inner).await
     {
         Ok(config) => config,
         Err(error) => {
@@ -1793,21 +1880,23 @@ async fn local_chat_completions_handler(
         }
     };
 
-    let effective_selected_ai_option_ids = effective_config
+    let effective_selected_models = effective_config
         .group(&group_id)
-        .map(|group| group.selected_ai_option_ids.clone())
+        .map(|group| group.selected_models.clone())
         .unwrap_or_default();
 
-    if let Err(message) = ensure_ai_option_selection_for_proxy(&effective_selected_ai_option_ids) {
-        record_proxy_error(&state, "No AI option selected.", Some(message.clone())).await;
+    if let Err(message) = ensure_model_selection_for_proxy(&effective_selected_models) {
+        record_proxy_error(&state, "No model selected.", Some(message.clone())).await;
         return openai_error_response(
             StatusCode::BAD_REQUEST,
-            NO_AI_OPTION_SELECTED_USER_MESSAGE,
-            "NO_AI_OPTION_SELECTED",
+            NO_MODEL_SELECTED_USER_MESSAGE,
+            "NO_MODEL_SELECTED",
         );
     }
 
-    inject_ai_option_ids(&mut parsed_request.body, &effective_selected_ai_option_ids);
+    // 真实模型由 key→分组→分组所选 model 决定：把客户端请求体里无意义的 model
+    // 改写成该分组已选 model 中的一个（多选时随机），再由服务器按标准 model 分发。
+    rewrite_request_model_from_group(&mut parsed_request.body, &effective_selected_models);
 
     record_trace_event(
     &state,
@@ -1829,7 +1918,7 @@ async fn local_chat_completions_handler(
         "requestKind": "chat.completions",
         "clientRequestModel": parsed_request.body.get("model").and_then(Value::as_str).unwrap_or_default(),
         "isStream": parsed_request.body.get("stream").and_then(Value::as_bool).unwrap_or(false),
-        "selectedAiOptionIds": effective_selected_ai_option_ids
+        "selectedModels": effective_selected_models
       }),
       None,
       None,
@@ -1894,17 +1983,29 @@ async fn apply_user_auth_header(
     state: &DesktopSharedState,
     config: &DesktopConfig,
 ) -> reqwest::RequestBuilder {
-    let access_token = ensure_fresh_access_token(state, config).await;
-
-    if let Some(token) = access_token {
-        return request.bearer_auth(token);
+    // 服务器只认登录后的 access token：登录态存在则以 Bearer 携带，否则不附加任何认证
+    // （服务器会因缺少认证而拒绝，避免误用写死的 dev 用户）。
+    //
+    // 服务器的 access token 鉴权要求 token 与用户 id 成对出现：除了 Bearer token，
+    // 还必须附带 `New-Api-User` 头（值为该用户的数字 id），否则即使 token 合法也会
+    // 被判定为缺少用户标识而拒绝。user_id 取自登录态，与 token 同源、保持一致。
+    match ensure_fresh_access_token(state, config).await {
+        Some(token) => {
+            let user_id = {
+                let runtime = state.inner.lock().await;
+                runtime
+                    .auth_session
+                    .as_ref()
+                    .and_then(|session| session.user_id.clone())
+            };
+            let request = request.bearer_auth(token);
+            match user_id {
+                Some(user_id) => request.header("New-Api-User", user_id),
+                None => request,
+            }
+        }
+        None => request,
     }
-
-    if !config.dev_user_id.trim().is_empty() {
-        return request.header("x-zebragate-user-id", config.dev_user_id.clone());
-    }
-
-    request
 }
 
 /// Returns the current access token, transparently refreshing it first if it is
@@ -2302,9 +2403,35 @@ fn parse_chat_completion_request(body: &[u8]) -> Result<ParsedChatRequest, Strin
     })
 }
 
-fn inject_ai_option_ids(request_body: &mut Value, selected_ai_option_ids: &[String]) {
-    if let Some(request_object) = request_body.as_object_mut() {
-        request_object.insert("ai_option_ids".to_string(), json!(selected_ai_option_ids));
+/// 把请求体里的 `model` 改写成「该分组已选 model」中的一个。
+///
+/// 真实模型由 key→分组→分组所选 model 决定，客户端发来的 `model`（如固定占位
+/// `zebragate_model`）无意义、被直接覆盖丢弃。分组可选多个 model 时随机选取一个，
+/// 以便把流量分散到用户实际选中的全部 model（而非永远命中某个推荐默认）。
+/// 调用方需先经 `ensure_model_selection_for_proxy` 保证 `selected_models` 非空。
+fn rewrite_request_model_from_group(request_body: &mut Value, selected_models: &[String]) {
+    let Some(chosen) = pick_random_model(selected_models) else {
+        return;
+    };
+    if let Some(object) = request_body.as_object_mut() {
+        object.insert("model".to_string(), Value::String(chosen.to_string()));
+    }
+}
+
+/// 从分组已选 model 中随机选一个；空列表返回 `None`。
+fn pick_random_model(selected_models: &[String]) -> Option<&String> {
+    match selected_models.len() {
+        0 => None,
+        1 => selected_models.first(),
+        len => {
+            let mut byte = [0u8; 1];
+            let index = match rand::rngs::SysRng.try_fill_bytes(&mut byte) {
+                Ok(()) => (byte[0] as usize) % len,
+                // 取随机字节失败时退化为首个 model，保证仍能正常转发。
+                Err(_) => 0,
+            };
+            selected_models.get(index)
+        }
     }
 }
 
@@ -2517,9 +2644,9 @@ fn summarize_sse_stream_summary_for_trace(summary: &Value, prefix: &str) -> Stri
     parts.join(" | ")
 }
 
-fn ensure_ai_option_selection_for_proxy(selected_ai_option_ids: &[String]) -> Result<(), String> {
-    if selected_ai_option_ids.is_empty() {
-        return Err(NO_AI_OPTION_SELECTED_USER_MESSAGE.to_string());
+fn ensure_model_selection_for_proxy(selected_models: &[String]) -> Result<(), String> {
+    if selected_models.is_empty() {
+        return Err(NO_MODEL_SELECTED_USER_MESSAGE.to_string());
     }
 
     Ok(())
@@ -2545,10 +2672,10 @@ fn detect_sensitive_keywords(text: &str, privacy_keywords: &[String]) -> Vec<Str
         .collect()
 }
 
-/// Filters every group's `selected_ai_option_ids` against the local AI option
-/// catalog cache, persisting any changes, and returns the resulting config. If
-/// no cache exists yet, the config is returned unchanged.
-async fn refresh_effective_ai_option_selections(
+/// Filters every group's `selected_models` against the local model catalog
+/// cache, persisting any changes, and returns the resulting config. If no cache
+/// exists yet, the config is returned unchanged.
+async fn refresh_effective_model_selections(
     state: &DesktopSharedState,
     inner: &Arc<Mutex<DesktopRuntimeState>>,
 ) -> Result<DesktopConfig, String> {
@@ -2557,27 +2684,23 @@ async fn refresh_effective_ai_option_selections(
         runtime.config.clone()
     };
 
-    let ai_option_catalog = match read_ai_option_catalog_cache(state).await? {
-        Some(cache) => cache.ai_options,
+    let selectable_models = match read_model_catalog_cache(state).await? {
+        Some(cache) => cache.models.into_iter().collect::<HashSet<_>>(),
         None => return Ok(config),
     };
-    let selectable_ai_option_ids = ai_option_catalog
-        .iter()
-        .map(|ai_option| ai_option.ai_option_id.clone())
-        .collect::<HashSet<_>>();
 
     let mut changed = false;
     let mut runtime = inner.lock().await;
     for group in runtime.config.groups.iter_mut() {
-        let filtered_ai_option_ids = group
-            .selected_ai_option_ids
+        let filtered_models = group
+            .selected_models
             .iter()
-            .filter(|ai_option_id| selectable_ai_option_ids.contains(*ai_option_id))
+            .filter(|model| selectable_models.contains(*model))
             .cloned()
             .collect::<Vec<_>>();
 
-        if filtered_ai_option_ids != group.selected_ai_option_ids {
-            group.selected_ai_option_ids = filtered_ai_option_ids;
+        if filtered_models != group.selected_models {
+            group.selected_models = filtered_models;
             changed = true;
         }
     }
@@ -2589,12 +2712,14 @@ async fn refresh_effective_ai_option_selections(
     Ok(runtime.config.clone())
 }
 
-async fn fetch_ai_option_catalog(
+/// Fetches the current user's available model names from the ZebraGate API
+/// (`/api/user/models`), authorized by the desktop's access token.
+async fn fetch_model_catalog(
     state: &DesktopSharedState,
     config: &DesktopConfig,
-) -> Result<Vec<SelectableAiOption>, String> {
+) -> Result<FetchedModelCatalog, String> {
     let url = format!(
-        "{}/v1/ai-options?recommendedOnly=false",
+        "{}/api/user/models",
         config.remote_api_base_url.trim_end_matches('/')
     );
     let mut request = state
@@ -2604,167 +2729,247 @@ async fn fetch_ai_option_catalog(
         .header(CONTENT_TYPE, "application/json");
     request = apply_user_auth_header(request, state, config).await;
 
-    let response = request.send().await.map_err(|error| {
-        format!("Failed to fetch AI option catalog from ZebraGate API: {error}")
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("Failed to fetch model list from ZebraGate API: {error}"))?;
     let status = response.status();
     let body_bytes = response
         .bytes()
         .await
-        .map_err(|error| format!("Failed to read AI option catalog response body: {error}"))?;
+        .map_err(|error| format!("Failed to read model list response body: {error}"))?;
 
     if !status.is_success() {
         let message = String::from_utf8_lossy(&body_bytes).to_string();
-        return Err(format!(
-            "ZebraGate API AI option catalog request failed: {message}"
-        ));
+        return Err(format!("ZebraGate API model list request failed: {message}"));
     }
 
-    serde_json::from_slice::<AiOptionCatalogResponse>(&body_bytes)
-        .map(|payload| payload.ai_options)
-        .map_err(|error| format!("Failed to decode AI option catalog response: {error}"))
+    serde_json::from_slice::<UserModelsResponse>(&body_bytes)
+        .map(|payload| FetchedModelCatalog {
+            models: payload.data,
+            model_tags: payload.model_tags,
+        })
+        .map_err(|error| format!("Failed to decode model list response: {error}"))
 }
 
-fn spawn_ai_option_catalog_refresh_loop(state: DesktopSharedState) {
+/// 一次远程拉取的结果，供后台退避循环据此决定下一次重试节奏。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CatalogRefreshOutcome {
+    /// 未登录，未发起请求（不视为失败，不触发退避重试）。
+    SkippedLoggedOut,
+    /// 拉取成功（`is_empty` 表示服务器返回的是空列表）。
+    Refreshed { is_empty: bool },
+    /// 拉取失败（网络/超时/鉴权/解析等）。
+    Failed,
+}
+
+/// 尝试拉取一次 model 列表，并按「网络结果 × 本地是否有数据」更新 runtime 的
+/// `last_catalog_refresh` 状态。未登录则直接跳过（不发请求、不报错）。
+/// 成功（含空）会覆盖本地缓存——空是服务器权威结果，必须如实落地，
+/// 已选 model 由 reconcile 链路按「不可用则移除并记 notice」处理。
+async fn try_refresh_model_catalog(state: &DesktopSharedState) -> CatalogRefreshOutcome {
+    let is_logged_in = {
+        let runtime = state.inner.lock().await;
+        runtime.auth_session.is_some()
+    };
+    if !is_logged_in {
+        return CatalogRefreshOutcome::SkippedLoggedOut;
+    }
+
+    match refresh_model_catalog_from_remote(state).await {
+        Ok(cache) => {
+            let is_empty = cache.models.is_empty();
+            let mut runtime = state.inner.lock().await;
+            runtime.last_catalog_refresh = if is_empty {
+                CatalogRefreshState::Empty
+            } else {
+                CatalogRefreshState::None
+            };
+            CatalogRefreshOutcome::Refreshed { is_empty }
+        }
+        Err(_) => {
+            let mut runtime = state.inner.lock().await;
+            runtime.last_catalog_refresh = CatalogRefreshState::Failed;
+            CatalogRefreshOutcome::Failed
+        }
+    }
+}
+
+/// 后台刷新循环：成功后按正常长周期刷新；失败后进入指数退避快速重试，
+/// 一旦成功即清零退避、回到正常周期。这样首次安装即拉取失败也能在数秒内
+/// 自动恢复，而非干等一个完整刷新周期。
+fn spawn_model_catalog_refresh_loop(state: DesktopSharedState) {
     tauri::async_runtime::spawn(async move {
-        let _ = refresh_ai_option_catalog_from_remote(&state).await;
+        let mut backoff_index: usize = 0;
         loop {
-            sleep(Duration::from_secs(AI_OPTION_CATALOG_REFRESH_INTERVAL_SECS)).await;
-            let _ = refresh_ai_option_catalog_from_remote(&state).await;
+            let outcome = try_refresh_model_catalog(&state).await;
+            let next_delay_secs = match outcome {
+                // 成功（含空，空是权威结果）或未登录：不退避，回到正常周期。
+                CatalogRefreshOutcome::Refreshed { .. }
+                | CatalogRefreshOutcome::SkippedLoggedOut => {
+                    backoff_index = 0;
+                    MODEL_CATALOG_REFRESH_INTERVAL_SECS
+                }
+                // 失败：按退避数列逐步拉长，封顶后并入正常周期。
+                CatalogRefreshOutcome::Failed => {
+                    let delay = MODEL_CATALOG_BACKOFF_SCHEDULE_SECS
+                        .get(backoff_index)
+                        .copied()
+                        .unwrap_or(MODEL_CATALOG_REFRESH_INTERVAL_SECS);
+                    if backoff_index < MODEL_CATALOG_BACKOFF_SCHEDULE_SECS.len() {
+                        backoff_index += 1;
+                    }
+                    delay
+                }
+            };
+            sleep(Duration::from_secs(next_delay_secs)).await;
         }
     });
 }
 
-async fn build_ai_option_catalog_snapshot(state: &DesktopSharedState) -> AiOptionCatalogSnapshot {
-    let cache = read_ai_option_catalog_cache(state).await.ok().flatten();
-    let now = current_unix_timestamp();
-    let (ai_options, fetched_at, is_stale) = match cache {
-        Some(cache) => {
-            let is_stale =
-                now.saturating_sub(cache.fetched_at) > AI_OPTION_CATALOG_STALE_AFTER_SECS;
-            (cache.ai_options, Some(cache.fetched_at), is_stale)
+/// 按「本地是否有可用 model × 最近一次拉取结果」推导是否向用户报错。
+/// 这是错误展示的单一事实来源：本地有数据则始终不报错（旧数据大概率仍可用，
+/// 短暂网络波动不打扰用户）；仅当本地无可用 model 时，才根据最近拉取结果给出
+/// 「正在重试」（失败）或「服务器无可用 model」（成功但空）。
+fn derive_catalog_error(
+    has_local_models: bool,
+    last_refresh: &CatalogRefreshState,
+) -> Option<String> {
+    if has_local_models {
+        return None;
+    }
+    match last_refresh {
+        CatalogRefreshState::Failed => {
+            Some(MODEL_CATALOG_UNAVAILABLE_RETRYING_MESSAGE.to_string())
         }
-        None => (Vec::new(), None, false),
-    };
-    let unavailable_ai_option_notices = {
-        let runtime = state.inner.lock().await;
-        runtime.unavailable_ai_option_notices.clone()
-    };
-
-    AiOptionCatalogSnapshot {
-        ai_options,
-        fetched_at,
-        is_stale,
-        unavailable_ai_option_notices,
+        CatalogRefreshState::Empty => Some(MODEL_CATALOG_EMPTY_MESSAGE.to_string()),
+        // 从未拉取过（含未登录）：交由前端「暂无可用 model，请联网后刷新」兜底，
+        // 不在此处伪造错误。
+        CatalogRefreshState::None => None,
     }
 }
 
-async fn refresh_ai_option_catalog_from_remote(
+async fn build_model_catalog_snapshot(state: &DesktopSharedState) -> ModelCatalogSnapshot {
+    let cache = read_model_catalog_cache(state).await.ok().flatten();
+    let now = current_unix_timestamp();
+    let (models, fetched_at, is_stale) = match cache {
+        Some(cache) => {
+            let is_stale = now.saturating_sub(cache.fetched_at) > MODEL_CATALOG_STALE_AFTER_SECS;
+            (cache.models, Some(cache.fetched_at), is_stale)
+        }
+        None => (Vec::new(), None, false),
+    };
+    let (unavailable_model_notices, last_refresh) = {
+        let runtime = state.inner.lock().await;
+        (
+            runtime.unavailable_model_notices.clone(),
+            runtime.last_catalog_refresh.clone(),
+        )
+    };
+    let catalog_error = derive_catalog_error(!models.is_empty(), &last_refresh);
+
+    ModelCatalogSnapshot {
+        models,
+        fetched_at,
+        is_stale,
+        unavailable_model_notices,
+        catalog_error,
+    }
+}
+
+async fn refresh_model_catalog_from_remote(
     state: &DesktopSharedState,
-) -> Result<AiOptionCatalogCache, String> {
+) -> Result<ModelCatalogCache, String> {
     let config = {
         let runtime = state.inner.lock().await;
         runtime.config.clone()
     };
-    let old_cache = read_ai_option_catalog_cache(state).await?;
-    let ai_options = fetch_ai_option_catalog(state, &config)
-        .await?
-        .into_iter()
-        .filter(|ai_option| ai_option.status != ProviderStatus::Disabled)
-        .collect::<Vec<_>>();
-    let cache = AiOptionCatalogCache {
-        version: AI_OPTION_CATALOG_CACHE_VERSION,
+    let fetched = fetch_model_catalog(state, &config).await?;
+    let default_models = fetched
+        .model_tags
+        .get(MODEL_TAG_DEFAULT)
+        .cloned()
+        .unwrap_or_default();
+    let cache = ModelCatalogCache {
+        version: MODEL_CATALOG_CACHE_VERSION,
         fetched_at: current_unix_timestamp(),
-        ai_options,
+        models: fetched.models,
+        default_models,
     };
 
-    write_ai_option_catalog_cache(state, &cache).await?;
-    reconcile_group_ai_option_selections_with_catalog(state, old_cache.as_ref(), &cache).await?;
+    write_model_catalog_cache(state, &cache).await?;
+    reconcile_group_model_selections_with_catalog(state, &cache).await?;
     Ok(cache)
 }
 
-async fn read_ai_option_catalog_cache(
+async fn read_model_catalog_cache(
     state: &DesktopSharedState,
-) -> Result<Option<AiOptionCatalogCache>, String> {
-    if !state.ai_option_catalog_cache_path.exists() {
+) -> Result<Option<ModelCatalogCache>, String> {
+    if !state.model_catalog_cache_path.exists() {
         return Ok(None);
     }
 
-    let cache = load_encrypted_compressed_json::<AiOptionCatalogCache>(
-        state.ai_option_catalog_cache_path.as_path(),
+    let cache = load_encrypted_compressed_json::<ModelCatalogCache>(
+        state.model_catalog_cache_path.as_path(),
         state.auth_key_path.as_path(),
-        "AI option catalog cache",
+        "model catalog cache",
     )?;
-    if cache.version != AI_OPTION_CATALOG_CACHE_VERSION {
+    if cache.version != MODEL_CATALOG_CACHE_VERSION {
         return Ok(None);
     }
     Ok(Some(cache))
 }
 
-async fn write_ai_option_catalog_cache(
+async fn write_model_catalog_cache(
     state: &DesktopSharedState,
-    cache: &AiOptionCatalogCache,
+    cache: &ModelCatalogCache,
 ) -> Result<(), String> {
     save_encrypted_compressed_json(
-        state.ai_option_catalog_cache_path.as_path(),
+        state.model_catalog_cache_path.as_path(),
         state.auth_key_path.as_path(),
         cache,
-        "AI option catalog cache",
+        "model catalog cache",
     )
 }
 
-async fn reconcile_group_ai_option_selections_with_catalog(
+async fn reconcile_group_model_selections_with_catalog(
     state: &DesktopSharedState,
-    old_cache: Option<&AiOptionCatalogCache>,
-    cache: &AiOptionCatalogCache,
+    cache: &ModelCatalogCache,
 ) -> Result<(), String> {
-    let selectable_ai_option_ids = cache
-        .ai_options
-        .iter()
-        .map(|ai_option| ai_option.ai_option_id.clone())
-        .collect::<HashSet<_>>();
-    let mut ai_option_names = HashMap::<String, String>::new();
-    if let Some(old_cache) = old_cache {
-        for ai_option in &old_cache.ai_options {
-            ai_option_names.insert(
-                ai_option.ai_option_id.clone(),
-                ai_option.public_name.clone(),
-            );
-        }
-    }
-    for ai_option in &cache.ai_options {
-        ai_option_names.insert(
-            ai_option.ai_option_id.clone(),
-            ai_option.public_name.clone(),
-        );
-    }
+    let selectable_models = cache.models.iter().cloned().collect::<HashSet<_>>();
 
     let mut changed = false;
     let mut notices = Vec::new();
     let mut runtime = state.inner.lock().await;
     for group in runtime.config.groups.iter_mut() {
-        let removed_ai_option_names = group
-            .selected_ai_option_ids
+        // 首次拉取成功后，对从未应用过默认勾选的分组（首次自动建的 default 分组）
+        // 一次性填入「默认」标签的 model。仅在该分组仍为空时填，避免覆盖用户选择；
+        // 无论是否填入都标记为已应用，避免日后反复回填用户主动清空的分组。
+        if !group.defaults_applied {
+            if group.selected_models.is_empty() && !cache.default_models.is_empty() {
+                group.selected_models = cache.default_models.clone();
+            }
+            group.defaults_applied = true;
+            changed = true;
+        }
+
+        let removed_model_names = group
+            .selected_models
             .iter()
-            .filter(|ai_option_id| !selectable_ai_option_ids.contains(*ai_option_id))
-            .map(|ai_option_id| {
-                ai_option_names
-                    .get(ai_option_id)
-                    .cloned()
-                    .unwrap_or_else(|| ai_option_id.clone())
-            })
+            .filter(|model| !selectable_models.contains(*model))
+            .cloned()
             .collect::<Vec<_>>();
 
-        if removed_ai_option_names.is_empty() {
+        if removed_model_names.is_empty() {
             continue;
         }
 
         group
-            .selected_ai_option_ids
-            .retain(|ai_option_id| selectable_ai_option_ids.contains(ai_option_id));
-        notices.push(UnavailableAiOptionNotice {
+            .selected_models
+            .retain(|model| selectable_models.contains(model));
+        notices.push(UnavailableModelNotice {
             group_name: group.name.clone(),
-            ai_option_names: removed_ai_option_names,
+            model_names: removed_model_names,
         });
         changed = true;
     }
@@ -2772,14 +2977,14 @@ async fn reconcile_group_ai_option_selections_with_catalog(
     if changed {
         persist_desktop_config(state.config_path.as_path(), &runtime.config)?;
     }
-    merge_unavailable_ai_option_notices(&mut runtime.unavailable_ai_option_notices, notices);
+    merge_unavailable_model_notices(&mut runtime.unavailable_model_notices, notices);
 
     Ok(())
 }
 
-fn merge_unavailable_ai_option_notices(
-    current_notices: &mut Vec<UnavailableAiOptionNotice>,
-    new_notices: Vec<UnavailableAiOptionNotice>,
+fn merge_unavailable_model_notices(
+    current_notices: &mut Vec<UnavailableModelNotice>,
+    new_notices: Vec<UnavailableModelNotice>,
 ) {
     for new_notice in new_notices {
         match current_notices
@@ -2788,29 +2993,51 @@ fn merge_unavailable_ai_option_notices(
         {
             Some(existing_notice) => {
                 let mut existing_names = existing_notice
-                    .ai_option_names
+                    .model_names
                     .iter()
                     .cloned()
                     .collect::<HashSet<_>>();
-                for ai_option_name in new_notice.ai_option_names {
-                    if existing_names.insert(ai_option_name.clone()) {
-                        existing_notice.ai_option_names.push(ai_option_name);
+                for model_name in new_notice.model_names {
+                    if existing_names.insert(model_name.clone()) {
+                        existing_notice.model_names.push(model_name);
                     }
                 }
             }
             None => {
                 let mut seen_names = HashSet::new();
-                let ai_option_names = new_notice
-                    .ai_option_names
+                let model_names = new_notice
+                    .model_names
                     .into_iter()
-                    .filter(|ai_option_name| seen_names.insert(ai_option_name.clone()))
+                    .filter(|model_name| seen_names.insert(model_name.clone()))
                     .collect::<Vec<_>>();
-                current_notices.push(UnavailableAiOptionNotice {
+                current_notices.push(UnavailableModelNotice {
                     group_name: new_notice.group_name,
-                    ai_option_names,
+                    model_names,
                 });
             }
         }
+    }
+}
+
+/// 返回 `(credits, remote_api_error_message)`。未登录时不携带 token，服务器必然
+/// 以 401 拒绝，因此直接跳过余额请求，返回 `(None, None)`，避免无意义的请求刷屏
+/// 后端日志。已登录时才真正请求 `/v1/credits/balance`。
+async fn resolve_remote_credits(
+    state: &DesktopSharedState,
+    config: &DesktopConfig,
+) -> (Option<i32>, Option<String>) {
+    let is_logged_in = {
+        let runtime = state.inner.lock().await;
+        runtime.auth_session.is_some()
+    };
+
+    if !is_logged_in {
+        return (None, None);
+    }
+
+    match fetch_remote_credits_balance(state, config).await {
+        Ok(credits) => (Some(credits), None),
+        Err(error) => (None, Some(error)),
     }
 }
 
@@ -2923,7 +3150,8 @@ fn load_or_initialize_desktop_config(config_path: &Path) -> Result<DesktopConfig
             name: DEFAULT_GROUP_NAME.to_string(),
             local_key: format!("zg-local-{}", Uuid::new_v4().simple()),
             last_used_at: None,
-            selected_ai_option_ids: Vec::new(),
+            selected_models: Vec::new(),
+            defaults_applied: false,
         }],
         default_group_id: String::new(),
         current_user_id: None,
@@ -2975,26 +3203,16 @@ fn load_desktop_config_for_user_with_fallback(
     Ok(runtime_config)
 }
 
-/// Migrates a pre-groups desktop config (single top-level `localKey` and
-/// `selectedAiOptionIds`) into a single "default" group, preserving the
-/// existing key so old client integrations keep working.
+/// Migrates a pre-groups desktop config (single top-level `localKey`) into a
+/// single "default" group, preserving the existing key so old client
+/// integrations keep working. Any previous AI-option selection is discarded:
+/// the user re-selects models after upgrading.
 fn migrate_legacy_desktop_config(raw_value: &Value) -> Result<DesktopConfig, String> {
     let local_key = raw_value
         .get("localKey")
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| format!("zg-local-{}", Uuid::new_v4().simple()));
-    let selected_ai_option_ids = raw_value
-        .get("selectedAiOptionIds")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     let last_port = raw_value
         .get("lastPort")
         .and_then(Value::as_u64)
@@ -3023,7 +3241,8 @@ fn migrate_legacy_desktop_config(raw_value: &Value) -> Result<DesktopConfig, Str
             name: DEFAULT_GROUP_NAME.to_string(),
             local_key,
             last_used_at: None,
-            selected_ai_option_ids,
+            selected_models: Vec::new(),
+            defaults_applied: false,
         }],
         default_group_id,
     })
@@ -3098,13 +3317,8 @@ fn load_persisted_desktop_config(
     Ok(persisted)
 }
 
+/// 构建一个仅含空默认分组（不预选 model）的用户配置。
 fn build_default_user_config() -> DesktopUserConfig {
-    build_default_user_config_with_ai_option_ids(&[])
-}
-
-fn build_default_user_config_with_ai_option_ids(
-    selected_ai_option_ids: &[String],
-) -> DesktopUserConfig {
     let default_group_id = Uuid::new_v4().to_string();
     DesktopUserConfig {
         privacy_protection_enabled: default_privacy_protection_enabled(),
@@ -3113,35 +3327,11 @@ fn build_default_user_config_with_ai_option_ids(
             name: DEFAULT_GROUP_NAME.to_string(),
             local_key: format!("zg-local-{}", Uuid::new_v4().simple()),
             last_used_at: None,
-            selected_ai_option_ids: selected_ai_option_ids.to_vec(),
+            selected_models: Vec::new(),
+            defaults_applied: false,
         }],
         default_group_id,
     }
-}
-
-fn recommended_ai_option_ids(ai_options: &[SelectableAiOption]) -> Vec<String> {
-    ai_options
-        .iter()
-        .filter(|ai_option| ai_option.is_recommended)
-        .map(|ai_option| ai_option.ai_option_id.clone())
-        .collect()
-}
-
-fn fill_single_empty_default_group_selection(
-    user_config: &mut DesktopUserConfig,
-    selected_ai_option_ids: &[String],
-) -> bool {
-    if selected_ai_option_ids.is_empty() || user_config.groups.len() != 1 {
-        return false;
-    }
-
-    let group = &mut user_config.groups[0];
-    if group.id != user_config.default_group_id || !group.selected_ai_option_ids.is_empty() {
-        return false;
-    }
-
-    group.selected_ai_option_ids = selected_ai_option_ids.to_vec();
-    true
 }
 
 fn load_or_create_auth_key(auth_key_path: &Path) -> Result<[u8; 32], String> {
@@ -3318,22 +3508,26 @@ fn urlencoding_encode(value: &str) -> String {
     encoded
 }
 
-fn resolve_web_base_url() -> String {
+fn resolve_web_base_url() -> Result<String, String> {
+    // 与远端 API 同理：编译期固化值优先，运行时环境变量仅供开发调试。
     for candidate in [
-        std::env::var("ZEBRAGATE_DESKTOP_WEB_BASE_URL").ok(),
-        std::env::var("NEXT_PUBLIC_WEB_BASE_URL").ok(),
         option_env!("ZEBRAGATE_DESKTOP_WEB_BASE_URL").map(ToString::to_string),
         option_env!("NEXT_PUBLIC_WEB_BASE_URL").map(ToString::to_string),
+        std::env::var("ZEBRAGATE_DESKTOP_WEB_BASE_URL").ok(),
+        std::env::var("NEXT_PUBLIC_WEB_BASE_URL").ok(),
     ] {
         if let Some(value) = candidate {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
-                return trimmed.to_string();
+                return Ok(trimmed.to_string());
             }
         }
     }
 
-    DEFAULT_WEB_BASE_URL.to_string()
+    Err(
+        "Desktop web base URL is not configured. Set ZEBRAGATE_DESKTOP_WEB_BASE_URL before building ZebraGate Desktop."
+            .to_string(),
+    )
 }
 
 fn build_local_address(port: u16) -> String {
@@ -3345,27 +3539,8 @@ fn default_privacy_protection_enabled() -> bool {
 }
 
 fn resolve_remote_api_base_url() -> Result<String, String> {
-    if let Ok(value) = std::env::var("ZEBRAGATE_DESKTOP_REMOTE_API_BASE_URL") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
-    if let Ok(value) = std::env::var("API_BASE_URL") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
-    if let Ok(value) = std::env::var("NEXT_PUBLIC_API_BASE_URL") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
+    // 分发场景下，远端地址为「原厂固定」：构建期通过 option_env! 固化进二进制，
+    // 这是最终用户拿到的权威值，因此编译期值优先。
     if let Some(value) = option_env!("ZEBRAGATE_DESKTOP_REMOTE_API_BASE_URL") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
@@ -3387,8 +3562,26 @@ fn resolve_remote_api_base_url() -> Result<String, String> {
         }
     }
 
-    if cfg!(debug_assertions) {
-        return Ok(DEFAULT_REMOTE_API_BASE_URL.to_string());
+    // 运行时环境变量仅用于开发调试；分发给用户的安装包不依赖此路径。
+    if let Ok(value) = std::env::var("ZEBRAGATE_DESKTOP_REMOTE_API_BASE_URL") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Ok(value) = std::env::var("API_BASE_URL") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Ok(value) = std::env::var("NEXT_PUBLIC_API_BASE_URL") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
     }
 
     Err(
@@ -3490,38 +3683,38 @@ async fn find_available_listener(
     ))
 }
 
-fn dedupe_ai_option_ids(ai_option_ids: Vec<String>) -> Vec<String> {
+fn dedupe_models(models: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
-    ai_option_ids
+    models
         .into_iter()
-        .filter(|ai_option_id| seen.insert(ai_option_id.clone()))
+        .filter(|model| seen.insert(model.clone()))
         .collect()
 }
 
-fn validate_ai_option_selection_against_catalog(
-    ai_option_ids: &[String],
-    cache: Option<&AiOptionCatalogCache>,
+fn validate_model_selection_against_catalog(
+    models: &[String],
+    cache: Option<&ModelCatalogCache>,
 ) -> Result<(), String> {
     let Some(cache) = cache else {
         return Ok(());
     };
 
-    let selectable_ai_option_ids = cache
-        .ai_options
+    let selectable_models = cache
+        .models
         .iter()
-        .map(|ai_option| ai_option.ai_option_id.as_str())
+        .map(String::as_str)
         .collect::<HashSet<_>>();
 
-    let invalid_ai_option_ids = ai_option_ids
+    let invalid_models = models
         .iter()
-        .filter(|ai_option_id| !selectable_ai_option_ids.contains(ai_option_id.as_str()))
+        .filter(|model| !selectable_models.contains(model.as_str()))
         .cloned()
         .collect::<Vec<_>>();
 
-    if !invalid_ai_option_ids.is_empty() {
+    if !invalid_models.is_empty() {
         return Err(format!(
-            "AI option selection contains unavailable ai option ids: {}.",
-            invalid_ai_option_ids.join(", ")
+            "Model selection contains unavailable models: {}.",
+            invalid_models.join(", ")
         ));
     }
 
@@ -3573,6 +3766,20 @@ mod tests {
         requests: Arc<TokioMutex<Vec<MockRemoteRequestRecord>>>,
     }
 
+    /// 生产代码要求远端地址必须显式配置（没配就报错，不再有硬编码兜底）。
+    /// 测试不验证地址本身，这里在首次使用时注入一个占位地址，
+    /// 仅为满足 reload 路径对地址来源的要求，不影响任何断言。
+    fn ensure_test_env() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            std::env::set_var(
+                "ZEBRAGATE_DESKTOP_REMOTE_API_BASE_URL",
+                "http://localhost:3001",
+            );
+            std::env::set_var("ZEBRAGATE_DESKTOP_WEB_BASE_URL", "http://localhost:5173");
+        });
+    }
+
     /// Builds a `DesktopConfig` with a single "default" group, for tests that don't
     /// exercise the multi-group behavior directly.
     fn test_config_with_group(
@@ -3580,10 +3787,11 @@ mod tests {
         dev_user_id: String,
         last_port: Option<u16>,
         local_key: &str,
-        selected_ai_option_ids: Vec<String>,
+        selected_models: Vec<String>,
         device_id: &str,
         privacy_protection_enabled: bool,
     ) -> DesktopConfig {
+        ensure_test_env();
         let group_id = "group-default".to_string();
         DesktopConfig {
             remote_api_base_url,
@@ -3597,25 +3805,19 @@ mod tests {
                 name: DEFAULT_GROUP_NAME.to_string(),
                 local_key: local_key.to_string(),
                 last_used_at: None,
-                selected_ai_option_ids,
+                selected_models,
+                defaults_applied: true,
             }],
             default_group_id: group_id,
         }
     }
 
-    fn test_selectable_ai_option(ai_option_id: &str, is_recommended: bool) -> SelectableAiOption {
-        SelectableAiOption {
-            ai_option_id: ai_option_id.to_string(),
-            provider_label: "Provider".to_string(),
-            model_label: "Model".to_string(),
-            public_name: ai_option_id.to_string(),
-            display_config_summary: "Summary".to_string(),
-            display_badges: Vec::new(),
-            credit_multiplier: 1.0,
-            is_recommended,
-            status: ProviderStatus::Healthy,
-            disable_reason: None,
-            sort_order: 0,
+    fn test_model_catalog_cache(models: &[&str]) -> ModelCatalogCache {
+        ModelCatalogCache {
+            version: MODEL_CATALOG_CACHE_VERSION,
+            fetched_at: current_unix_timestamp(),
+            models: models.iter().map(|model| model.to_string()).collect(),
+            default_models: Vec::new(),
         }
     }
 
@@ -3637,7 +3839,8 @@ mod tests {
             name: "other".to_string(),
             local_key: "zg-local-other".to_string(),
             last_used_at: None,
-            selected_ai_option_ids: Vec::new(),
+            selected_models: Vec::new(),
+            defaults_applied: true,
         });
 
         delete_group_from_config(&mut config, &default_group_id)
@@ -3764,6 +3967,16 @@ mod tests {
     }
 
     #[test]
+    fn tray_show_request_is_suppressed_until_main_window_is_ready() {
+        // Before the first page load finishes the window is blank and
+        // mis-positioned, so a tray click must not reveal it.
+        assert!(!should_show_main_window_on_request(false));
+        // Once the page has loaded and geometry has been applied, tray clicks
+        // show the window normally.
+        assert!(should_show_main_window_on_request(true));
+    }
+
+    #[test]
     fn tray_quit_confirmation_copy_explains_proxy_impact() {
         assert!(TRAY_QUIT_CONFIRMATION_TITLE.contains("退出"));
         assert!(TRAY_QUIT_CONFIRMATION_MESSAGE.contains("访问请求"));
@@ -3771,67 +3984,62 @@ mod tests {
     }
 
     #[test]
-    fn inject_ai_option_ids_overrides_client_values() {
+    fn ensure_model_selection_for_proxy_rejects_empty_selection() {
+        let error = ensure_model_selection_for_proxy(&[])
+            .expect_err("empty model selection should be rejected");
+
+        assert_eq!(error, NO_MODEL_SELECTED_USER_MESSAGE);
+    }
+
+    #[test]
+    fn rewrite_request_model_overwrites_client_model_with_group_model() {
+        // 客户端发的占位 model 应被分组所选 model 覆盖（单选时为确定值）。
         let mut request_body = json!({
           "model": "zebragate_model",
           "messages": [{ "role": "user", "content": "hello" }],
-          "ai_option_ids": ["client-value"]
         });
 
-        inject_ai_option_ids(&mut request_body, &["ai-option-openai-mock".to_string()]);
-        assert_eq!(
-            request_body["ai_option_ids"],
-            json!(["ai-option-openai-mock"])
-        );
+        rewrite_request_model_from_group(&mut request_body, &["gpt-4o-mini".to_string()]);
+
+        assert_eq!(request_body["model"], json!("gpt-4o-mini"));
     }
 
     #[test]
-    fn ensure_ai_option_selection_for_proxy_rejects_empty_selection() {
-        let error = ensure_ai_option_selection_for_proxy(&[])
-            .expect_err("empty ai option selection should be rejected");
+    fn rewrite_request_model_picks_from_selected_models_set() {
+        // 多选时随机选取，结果必须落在分组所选 model 集合内（不依赖具体随到哪个）。
+        let selected = ["gpt-4o-mini".to_string(), "claude-3".to_string()];
+        for _ in 0..32 {
+            let mut request_body = json!({
+              "model": "zebragate_model",
+              "messages": [{ "role": "user", "content": "hello" }],
+            });
 
-        assert_eq!(error, NO_AI_OPTION_SELECTED_USER_MESSAGE);
+            rewrite_request_model_from_group(&mut request_body, &selected);
+
+            let chosen = request_body["model"].as_str().expect("model should be a string");
+            assert!(
+                selected.iter().any(|model| model == chosen),
+                "rewritten model {chosen} must be one of the selected models"
+            );
+        }
     }
 
     #[test]
-    fn recommended_ai_option_ids_returns_recommended_catalog_ids() {
-        let ai_options = vec![
-            test_selectable_ai_option("option-recommended-a", true),
-            test_selectable_ai_option("option-not-recommended", false),
-            test_selectable_ai_option("option-recommended-b", true),
-        ];
+    fn rewrite_request_model_leaves_body_untouched_when_no_models_selected() {
+        // 空选不改写（实际链路由 ensure_model_selection_for_proxy 先行拦截并报错）。
+        let mut request_body = json!({
+          "model": "zebragate_model",
+          "messages": [{ "role": "user", "content": "hello" }],
+        });
 
-        assert_eq!(
-            recommended_ai_option_ids(&ai_options),
-            vec![
-                "option-recommended-a".to_string(),
-                "option-recommended-b".to_string()
-            ]
-        );
+        rewrite_request_model_from_group(&mut request_body, &[]);
+
+        assert_eq!(request_body["model"], json!("zebragate_model"));
     }
 
     #[test]
-    fn fill_single_empty_default_group_selection_only_updates_empty_default_group() {
-        let recommended_ids = vec!["option-recommended".to_string()];
-        let mut user_config = build_default_user_config();
-
-        assert!(fill_single_empty_default_group_selection(
-            &mut user_config,
-            &recommended_ids
-        ));
-        assert_eq!(
-            user_config.groups[0].selected_ai_option_ids,
-            recommended_ids
-        );
-
-        assert!(!fill_single_empty_default_group_selection(
-            &mut user_config,
-            &["option-other".to_string()]
-        ));
-        assert_eq!(
-            user_config.groups[0].selected_ai_option_ids,
-            vec!["option-recommended".to_string()]
-        );
+    fn pick_random_model_returns_none_for_empty_selection() {
+        assert!(pick_random_model(&[]).is_none());
     }
 
     #[test]
@@ -3843,7 +4051,7 @@ mod tests {
             "user-1".to_string(),
             Some(7788),
             "zg-local-test",
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             "device-1",
             false,
         );
@@ -3888,7 +4096,7 @@ mod tests {
         assert_eq!(user_b_config.groups.len(), 1);
         assert_eq!(user_b_config.groups[0].name, DEFAULT_GROUP_NAME);
         assert_ne!(user_b_config.groups[0].local_key, "zg-local-user-a");
-        assert!(user_b_config.groups[0].selected_ai_option_ids.is_empty());
+        assert!(user_b_config.groups[0].selected_models.is_empty());
 
         let reloaded_user_a = load_desktop_config_for_user(&config_path, Some("user-a"))
             .expect("user A config should reload");
@@ -3896,7 +4104,7 @@ mod tests {
         assert_eq!(reloaded_user_a.groups[0].name, "A Team");
         assert_eq!(reloaded_user_a.groups[0].local_key, "zg-local-user-a");
         assert_eq!(
-            reloaded_user_a.groups[0].selected_ai_option_ids,
+            reloaded_user_a.groups[0].selected_models,
             vec!["ai-option-a".to_string()]
         );
     }
@@ -3946,6 +4154,7 @@ mod tests {
 
     #[test]
     fn load_or_initialize_desktop_config_migrates_legacy_single_group_config() {
+        ensure_test_env();
         let temp_directory = tempdir().expect("tempdir should be created");
         let config_path = temp_directory.path().join("desktop-config.json");
         let legacy_json = json!({
@@ -3970,10 +4179,8 @@ mod tests {
         let group = &migrated.groups[0];
         assert_eq!(group.name, DEFAULT_GROUP_NAME);
         assert_eq!(group.local_key, "zg-local-legacy");
-        assert_eq!(
-            group.selected_ai_option_ids,
-            vec!["ai-option-openai-mock".to_string()]
-        );
+        // 旧版的 AI-option 选择不迁移，升级后由用户重新选择 model。
+        assert!(group.selected_models.is_empty());
         assert_eq!(migrated.default_group_id, group.id);
         assert_eq!(migrated.last_port, Some(7788));
         assert_eq!(migrated.device_id, "device-1");
@@ -4052,11 +4259,12 @@ mod tests {
         config: DesktopConfig,
         auth_session: Option<AuthSession>,
     ) -> DesktopSharedState {
+        ensure_test_env();
         DesktopSharedState {
             client: Client::builder().build().expect("client should build"),
             config_path: Arc::new(temp_directory.path().join("desktop-config.json")),
-            ai_option_catalog_cache_path: Arc::new(
-                temp_directory.path().join("ai-options-catalog.cache"),
+            model_catalog_cache_path: Arc::new(
+                temp_directory.path().join("models-catalog.cache"),
             ),
             auth_session_path: Arc::new(temp_directory.path().join("auth-session.bin")),
             auth_key_path: Arc::new(temp_directory.path().join("auth-key.bin")),
@@ -4072,14 +4280,15 @@ mod tests {
                 },
                 shutdown_tx: None,
                 auth_session,
-                unavailable_ai_option_notices: Vec::new(),
+                unavailable_model_notices: Vec::new(),
+                last_catalog_refresh: CatalogRefreshState::None,
             })),
             active_request_count: Arc::new(AtomicU32::new(0)),
         }
     }
 
     #[tokio::test]
-    async fn ai_option_catalog_cache_round_trips_encrypted_and_compressed() {
+    async fn model_catalog_cache_round_trips_encrypted_and_compressed() {
         let temp_directory = tempdir().expect("tempdir should be created");
         let config = test_config_with_group(
             "http://localhost:3001".to_string(),
@@ -4091,83 +4300,66 @@ mod tests {
             false,
         );
         let state = build_test_shared_state(&temp_directory, config, None);
-        let cache = AiOptionCatalogCache {
-            version: AI_OPTION_CATALOG_CACHE_VERSION,
+        let cache = ModelCatalogCache {
+            version: MODEL_CATALOG_CACHE_VERSION,
             fetched_at: 1_800_000_000,
-            ai_options: vec![test_selectable_ai_option("ai-option-secret", true)],
+            models: vec!["secret-model".to_string()],
+            default_models: Vec::new(),
         };
 
-        write_ai_option_catalog_cache(&state, &cache)
+        write_model_catalog_cache(&state, &cache)
             .await
             .expect("cache should save");
-        let raw = fs::read_to_string(state.ai_option_catalog_cache_path.as_path())
+        let raw = fs::read_to_string(state.model_catalog_cache_path.as_path())
             .expect("cache should read");
-        assert!(!raw.contains("ai-option-secret"));
+        assert!(!raw.contains("secret-model"));
 
-        let reloaded = read_ai_option_catalog_cache(&state)
+        let reloaded = read_model_catalog_cache(&state)
             .await
             .expect("cache should load")
             .expect("cache should exist");
         assert_eq!(reloaded.fetched_at, cache.fetched_at);
-        assert_eq!(reloaded.ai_options[0].ai_option_id, "ai-option-secret");
+        assert_eq!(reloaded.models, vec!["secret-model".to_string()]);
     }
 
     #[tokio::test]
-    async fn reconcile_group_ai_option_selections_removes_unavailable_options_and_records_notice() {
+    async fn reconcile_group_model_selections_removes_unavailable_models_and_records_notice() {
         let temp_directory = tempdir().expect("tempdir should be created");
         let config = test_config_with_group(
             "http://localhost:3001".to_string(),
             "user-1".to_string(),
             None,
             "zg-local-test",
-            vec![
-                "ai-option-kept".to_string(),
-                "ai-option-removed".to_string(),
-            ],
+            vec!["model-kept".to_string(), "model-removed".to_string()],
             "device-1",
             false,
         );
         let state = build_test_shared_state(&temp_directory, config.clone(), None);
         persist_desktop_config(state.config_path.as_path(), &config)
             .expect("config should persist");
-        let old_cache = AiOptionCatalogCache {
-            version: AI_OPTION_CATALOG_CACHE_VERSION,
-            fetched_at: 1_800_000_000,
-            ai_options: vec![
-                test_selectable_ai_option("ai-option-kept", true),
-                test_selectable_ai_option("ai-option-removed", false),
-            ],
-        };
-        let new_cache = AiOptionCatalogCache {
-            version: AI_OPTION_CATALOG_CACHE_VERSION,
-            fetched_at: 1_800_000_100,
-            ai_options: vec![test_selectable_ai_option("ai-option-kept", true)],
-        };
+        let new_cache = test_model_catalog_cache(&["model-kept"]);
 
-        reconcile_group_ai_option_selections_with_catalog(&state, Some(&old_cache), &new_cache)
+        reconcile_group_model_selections_with_catalog(&state, &new_cache)
             .await
             .expect("selection should reconcile");
 
         let reloaded = load_or_initialize_desktop_config(state.config_path.as_path())
             .expect("config should reload");
         assert_eq!(
-            reloaded.groups[0].selected_ai_option_ids,
-            vec!["ai-option-kept".to_string()]
+            reloaded.groups[0].selected_models,
+            vec!["model-kept".to_string()]
         );
         let notices = {
             let runtime = state.inner.lock().await;
-            runtime.unavailable_ai_option_notices.clone()
+            runtime.unavailable_model_notices.clone()
         };
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].group_name, DEFAULT_GROUP_NAME);
-        assert_eq!(
-            notices[0].ai_option_names,
-            vec!["ai-option-removed".to_string()]
-        );
+        assert_eq!(notices[0].model_names, vec!["model-removed".to_string()]);
     }
 
     #[tokio::test]
-    async fn reconcile_group_ai_option_selections_accumulates_pending_notices_without_duplicates() {
+    async fn reconcile_group_model_selections_accumulates_pending_notices_without_duplicates() {
         let temp_directory = tempdir().expect("tempdir should be created");
         let config = test_config_with_group(
             "http://localhost:3001".to_string(),
@@ -4175,9 +4367,9 @@ mod tests {
             None,
             "zg-local-test",
             vec![
-                "ai-option-removed-before".to_string(),
-                "ai-option-removed-now".to_string(),
-                "ai-option-kept".to_string(),
+                "model-removed-before".to_string(),
+                "model-removed-now".to_string(),
+                "model-kept".to_string(),
             ],
             "device-1",
             false,
@@ -4188,74 +4380,133 @@ mod tests {
         {
             let mut runtime = state.inner.lock().await;
             runtime
-                .unavailable_ai_option_notices
-                .push(UnavailableAiOptionNotice {
+                .unavailable_model_notices
+                .push(UnavailableModelNotice {
                     group_name: DEFAULT_GROUP_NAME.to_string(),
-                    ai_option_names: vec!["ai-option-removed-before".to_string()],
+                    model_names: vec!["model-removed-before".to_string()],
                 });
         }
 
-        let old_cache = AiOptionCatalogCache {
-            version: AI_OPTION_CATALOG_CACHE_VERSION,
-            fetched_at: 1_800_000_000,
-            ai_options: vec![
-                test_selectable_ai_option("ai-option-removed-before", true),
-                test_selectable_ai_option("ai-option-removed-now", true),
-                test_selectable_ai_option("ai-option-kept", true),
-            ],
-        };
-        let new_cache = AiOptionCatalogCache {
-            version: AI_OPTION_CATALOG_CACHE_VERSION,
-            fetched_at: 1_800_000_100,
-            ai_options: vec![test_selectable_ai_option("ai-option-kept", true)],
-        };
+        let new_cache = test_model_catalog_cache(&["model-kept"]);
 
-        reconcile_group_ai_option_selections_with_catalog(&state, Some(&old_cache), &new_cache)
+        reconcile_group_model_selections_with_catalog(&state, &new_cache)
             .await
             .expect("selection should reconcile");
 
         let notices = {
             let runtime = state.inner.lock().await;
-            runtime.unavailable_ai_option_notices.clone()
+            runtime.unavailable_model_notices.clone()
         };
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].group_name, DEFAULT_GROUP_NAME);
         assert_eq!(
-            notices[0].ai_option_names,
+            notices[0].model_names,
             vec![
-                "ai-option-removed-before".to_string(),
-                "ai-option-removed-now".to_string()
+                "model-removed-before".to_string(),
+                "model-removed-now".to_string()
             ]
         );
     }
 
-    #[test]
-    fn validate_ai_option_selection_skips_catalog_check_when_cache_is_missing() {
-        let result = validate_ai_option_selection_against_catalog(
-            &["ai-option-from-existing-config".to_string()],
-            None,
+    /// 构建一个含单个分组的配置，可指定该分组的 selected_models 与 defaults_applied，
+    /// 用于覆盖「首次自动建的 default 分组自动勾选默认 model」的回填行为。
+    fn test_config_with_default_group(
+        selected_models: Vec<String>,
+        defaults_applied: bool,
+    ) -> DesktopConfig {
+        ensure_test_env();
+        let group_id = "group-default".to_string();
+        DesktopConfig {
+            remote_api_base_url: "http://localhost:3001".to_string(),
+            dev_user_id: String::new(),
+            last_port: None,
+            device_id: "device-1".to_string(),
+            current_user_id: None,
+            privacy_protection_enabled: false,
+            groups: vec![DesktopGroup {
+                id: group_id.clone(),
+                name: DEFAULT_GROUP_NAME.to_string(),
+                local_key: "zg-local-test".to_string(),
+                last_used_at: None,
+                selected_models,
+                defaults_applied,
+            }],
+            default_group_id: group_id,
+        }
+    }
+
+    fn test_model_catalog_cache_with_defaults(
+        models: &[&str],
+        default_models: &[&str],
+    ) -> ModelCatalogCache {
+        ModelCatalogCache {
+            version: MODEL_CATALOG_CACHE_VERSION,
+            fetched_at: current_unix_timestamp(),
+            models: models.iter().map(|m| m.to_string()).collect(),
+            default_models: default_models.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_fills_default_models_into_untouched_default_group() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let config = test_config_with_default_group(Vec::new(), false);
+        let state = build_test_shared_state(&temp_directory, config.clone(), None);
+        persist_desktop_config(state.config_path.as_path(), &config)
+            .expect("config should persist");
+        let cache = test_model_catalog_cache_with_defaults(
+            &["model-a", "model-b", "model-c"],
+            &["model-a", "model-b"],
         );
+
+        reconcile_group_model_selections_with_catalog(&state, &cache)
+            .await
+            .expect("selection should reconcile");
+
+        let runtime = state.inner.lock().await;
+        assert_eq!(
+            runtime.config.groups[0].selected_models,
+            vec!["model-a".to_string(), "model-b".to_string()]
+        );
+        assert!(runtime.config.groups[0].defaults_applied);
+    }
+
+    #[tokio::test]
+    async fn reconcile_does_not_refill_default_group_the_user_emptied() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        // 用户已手动操作过（defaults_applied=true）且清空了选择，回填不应再次发生。
+        let config = test_config_with_default_group(Vec::new(), true);
+        let state = build_test_shared_state(&temp_directory, config.clone(), None);
+        persist_desktop_config(state.config_path.as_path(), &config)
+            .expect("config should persist");
+        let cache = test_model_catalog_cache_with_defaults(&["model-a"], &["model-a"]);
+
+        reconcile_group_model_selections_with_catalog(&state, &cache)
+            .await
+            .expect("selection should reconcile");
+
+        let runtime = state.inner.lock().await;
+        assert!(runtime.config.groups[0].selected_models.is_empty());
+    }
+
+    #[test]
+    fn validate_model_selection_skips_catalog_check_when_cache_is_missing() {
+        let result =
+            validate_model_selection_against_catalog(&["model-from-existing-config".to_string()], None);
 
         assert!(result.is_ok());
     }
 
     #[test]
-    fn validate_ai_option_selection_rejects_unknown_ids_when_cache_exists() {
-        let cache = AiOptionCatalogCache {
-            version: AI_OPTION_CATALOG_CACHE_VERSION,
-            fetched_at: 1_800_000_000,
-            ai_options: vec![test_selectable_ai_option("ai-option-known", true)],
-        };
-        let error = validate_ai_option_selection_against_catalog(
-            &[
-                "ai-option-known".to_string(),
-                "ai-option-unknown".to_string(),
-            ],
+    fn validate_model_selection_rejects_unknown_models_when_cache_exists() {
+        let cache = test_model_catalog_cache(&["model-known"]);
+        let error = validate_model_selection_against_catalog(
+            &["model-known".to_string(), "model-unknown".to_string()],
             Some(&cache),
         )
-        .expect_err("unknown id should be rejected when cache exists");
+        .expect_err("unknown model should be rejected when cache exists");
 
-        assert!(error.contains("ai-option-unknown"));
+        assert!(error.contains("model-unknown"));
     }
 
     #[tokio::test]
@@ -4282,7 +4533,7 @@ mod tests {
             }),
         );
 
-        let request = state.client.get("http://127.0.0.1:9/v1/ai-options");
+        let request = state.client.get("http://127.0.0.1:9/api/user/models");
         let request = apply_user_auth_header(request, &state, &config).await;
         let built = request.build().expect("request should build");
 
@@ -4293,11 +4544,23 @@ mod tests {
             .to_str()
             .expect("authorization header should be valid utf-8");
         assert_eq!(authorization, "Bearer supabase-access-token");
+
+        // 服务器要求 access token 与用户 id 成对出现：必须附带 New-Api-User 头，
+        // 其值取自登录态的 user_id，与 token 同源。
+        let api_user = built
+            .headers()
+            .get("New-Api-User")
+            .expect("New-Api-User header should be set")
+            .to_str()
+            .expect("New-Api-User header should be valid utf-8");
+        assert_eq!(api_user, "user-1");
+
+        // 不再附带旧的本地用户标识头。
         assert!(built.headers().get("x-zebragate-user-id").is_none());
     }
 
     #[tokio::test]
-    async fn apply_user_auth_header_falls_back_to_dev_user_id_when_logged_out() {
+    async fn apply_user_auth_header_attaches_no_auth_when_logged_out() {
         let temp_directory = tempdir().expect("tempdir should be created");
         let config = test_config_with_group(
             "http://localhost:3001".to_string(),
@@ -4310,18 +4573,321 @@ mod tests {
         );
         let state = build_test_shared_state(&temp_directory, config.clone(), None);
 
-        let request = state.client.get("http://127.0.0.1:9/v1/ai-options");
+        let request = state.client.get("http://127.0.0.1:9/api/user/models");
         let request = apply_user_auth_header(request, &state, &config).await;
         let built = request.build().expect("request should build");
 
-        let user_id_header = built
-            .headers()
-            .get("x-zebragate-user-id")
-            .expect("dev user id header should be set")
-            .to_str()
-            .expect("header should be valid utf-8");
-        assert_eq!(user_id_header, "user-1");
+        // 登出态下不再回退到 dev 用户 header，也不附加任何认证（含用户 id 头）。
+        assert!(built.headers().get("x-zebragate-user-id").is_none());
         assert!(built.headers().get(AUTHORIZATION).is_none());
+        assert!(built.headers().get("New-Api-User").is_none());
+    }
+
+    /// 启动一个记录命中次数的余额 mock server，返回 `(base_url, hit_counter, shutdown_tx)`。
+    async fn spawn_credits_balance_mock(
+        balance: i32,
+    ) -> (String, Arc<AtomicU32>, oneshot::Sender<()>) {
+        let hits = Arc::new(AtomicU32::new(0));
+        let hits_for_route = hits.clone();
+        let app = Router::new().route(
+            "/v1/credits/balance",
+            get(move || {
+                let hits = hits_for_route.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "balance": balance }))
+                }
+            }),
+        );
+        let listener = TcpListener::bind((LOCAL_PROXY_HOST, 0))
+            .await
+            .expect("balance listener should bind");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("balance addr should resolve")
+        );
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        (base_url, hits, shutdown_tx)
+    }
+
+    /// 启动一个可配置返回的 `/api/user/models` mock。`status` 为响应码，
+    /// `models` 为返回的 model 名单（用于区分非空/空）。返回 `(base_url, hits, shutdown_tx)`。
+    async fn spawn_user_models_mock(
+        status: StatusCode,
+        models: Vec<String>,
+    ) -> (String, Arc<AtomicU32>, oneshot::Sender<()>) {
+        let hits = Arc::new(AtomicU32::new(0));
+        let hits_for_route = hits.clone();
+        let app = Router::new().route(
+            "/api/user/models",
+            get(move || {
+                let hits = hits_for_route.clone();
+                let models = models.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (
+                        status,
+                        Json(json!({ "success": status.is_success(), "data": models })),
+                    )
+                }
+            }),
+        );
+        let listener = TcpListener::bind((LOCAL_PROXY_HOST, 0))
+            .await
+            .expect("models listener should bind");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("models addr should resolve")
+        );
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        (base_url, hits, shutdown_tx)
+    }
+
+    fn logged_in_session() -> AuthSession {
+        AuthSession {
+            access_token: "access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            email: Some("user@example.com".to_string()),
+            user_id: Some("2".to_string()),
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn derive_catalog_error_stays_silent_when_local_has_models() {
+        // 本地有数据：无论最近拉取结果如何都不报错（旧数据大概率仍可用）。
+        for last in [
+            CatalogRefreshState::None,
+            CatalogRefreshState::Failed,
+            CatalogRefreshState::Empty,
+        ] {
+            assert_eq!(derive_catalog_error(true, &last), None);
+        }
+    }
+
+    #[test]
+    fn derive_catalog_error_reports_only_when_local_empty_and_actionable() {
+        // 本地无数据时，仅在「失败（重试中）」或「成功但空」才报错；从未拉取过不报错。
+        assert_eq!(
+            derive_catalog_error(false, &CatalogRefreshState::Failed),
+            Some(MODEL_CATALOG_UNAVAILABLE_RETRYING_MESSAGE.to_string())
+        );
+        assert_eq!(
+            derive_catalog_error(false, &CatalogRefreshState::Empty),
+            Some(MODEL_CATALOG_EMPTY_MESSAGE.to_string())
+        );
+        assert_eq!(derive_catalog_error(false, &CatalogRefreshState::None), None);
+    }
+
+    #[tokio::test]
+    async fn try_refresh_model_catalog_skips_when_logged_out() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let (base_url, hits, shutdown_tx) =
+            spawn_user_models_mock(StatusCode::OK, vec!["m".to_string()]).await;
+        let config = test_config_with_group(
+            base_url,
+            "user-1".to_string(),
+            None,
+            "zg-local-test",
+            Vec::new(),
+            "device-1",
+            false,
+        );
+        // 未登录：auth_session 为 None。
+        let state = build_test_shared_state(&temp_directory, config, None);
+
+        let outcome = try_refresh_model_catalog(&state).await;
+
+        assert_eq!(outcome, CatalogRefreshOutcome::SkippedLoggedOut);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "logged-out state must not hit /api/user/models"
+        );
+        // 未登录不改变拉取状态。
+        let runtime = state.inner.lock().await;
+        assert_eq!(runtime.last_catalog_refresh, CatalogRefreshState::None);
+        drop(runtime);
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn try_refresh_model_catalog_records_failed_when_remote_errors() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let (base_url, _hits, shutdown_tx) =
+            spawn_user_models_mock(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()).await;
+        let config = test_config_with_group(
+            base_url,
+            "user-1".to_string(),
+            None,
+            "zg-local-test",
+            Vec::new(),
+            "device-1",
+            false,
+        );
+        let state = build_test_shared_state(&temp_directory, config, Some(logged_in_session()));
+
+        let outcome = try_refresh_model_catalog(&state).await;
+
+        assert_eq!(outcome, CatalogRefreshOutcome::Failed);
+        let runtime = state.inner.lock().await;
+        assert_eq!(runtime.last_catalog_refresh, CatalogRefreshState::Failed);
+        drop(runtime);
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn try_refresh_model_catalog_records_empty_and_writes_cache_when_remote_empty() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let (base_url, _hits, shutdown_tx) =
+            spawn_user_models_mock(StatusCode::OK, Vec::new()).await;
+        let config = test_config_with_group(
+            base_url,
+            "user-1".to_string(),
+            None,
+            "zg-local-test",
+            Vec::new(),
+            "device-1",
+            false,
+        );
+        let state = build_test_shared_state(&temp_directory, config, Some(logged_in_session()));
+
+        let outcome = try_refresh_model_catalog(&state).await;
+
+        // 空是服务器权威结果：算成功（不退避），状态记为 Empty，并把空列表落地缓存。
+        assert_eq!(outcome, CatalogRefreshOutcome::Refreshed { is_empty: true });
+        let runtime = state.inner.lock().await;
+        assert_eq!(runtime.last_catalog_refresh, CatalogRefreshState::Empty);
+        drop(runtime);
+        let cache = read_model_catalog_cache(&state)
+            .await
+            .expect("cache read should succeed")
+            .expect("cache should be written");
+        assert!(cache.models.is_empty());
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn try_refresh_model_catalog_records_success_when_remote_has_models() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let (base_url, _hits, shutdown_tx) = spawn_user_models_mock(
+            StatusCode::OK,
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+        )
+        .await;
+        let config = test_config_with_group(
+            base_url,
+            "user-1".to_string(),
+            None,
+            "zg-local-test",
+            Vec::new(),
+            "device-1",
+            false,
+        );
+        let state = build_test_shared_state(&temp_directory, config, Some(logged_in_session()));
+
+        let outcome = try_refresh_model_catalog(&state).await;
+
+        assert_eq!(outcome, CatalogRefreshOutcome::Refreshed { is_empty: false });
+        let runtime = state.inner.lock().await;
+        assert_eq!(runtime.last_catalog_refresh, CatalogRefreshState::None);
+        drop(runtime);
+        let cache = read_model_catalog_cache(&state)
+            .await
+            .expect("cache read should succeed")
+            .expect("cache should be written");
+        assert_eq!(cache.models, vec!["deepseek-chat", "deepseek-reasoner"]);
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn resolve_remote_credits_skips_request_when_logged_out() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let (base_url, hits, shutdown_tx) = spawn_credits_balance_mock(42).await;
+
+        let config = test_config_with_group(
+            base_url,
+            "user-1".to_string(),
+            None,
+            "zg-local-test",
+            Vec::new(),
+            "device-1",
+            false,
+        );
+        // 未登录：auth_session 为 None。
+        let state = build_test_shared_state(&temp_directory, config.clone(), None);
+
+        let (credits, error) = resolve_remote_credits(&state, &config).await;
+
+        // 未登录时既不应取到余额，也不应产生错误（根本不发请求）。
+        assert_eq!(credits, None);
+        assert_eq!(error, None);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "logged-out state must not hit /v1/credits/balance"
+        );
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn resolve_remote_credits_fetches_balance_when_logged_in() {
+        let temp_directory = tempdir().expect("tempdir should be created");
+        let (base_url, hits, shutdown_tx) = spawn_credits_balance_mock(42).await;
+
+        let config = test_config_with_group(
+            base_url,
+            "user-1".to_string(),
+            None,
+            "zg-local-test",
+            Vec::new(),
+            "device-1",
+            false,
+        );
+        let state = build_test_shared_state(
+            &temp_directory,
+            config.clone(),
+            Some(AuthSession {
+                access_token: "supabase-access-token".to_string(),
+                refresh_token: "supabase-refresh-token".to_string(),
+                email: Some("user@example.com".to_string()),
+                user_id: Some("user-1".to_string()),
+                expires_at: None,
+            }),
+        );
+
+        let (credits, error) = resolve_remote_credits(&state, &config).await;
+
+        assert_eq!(credits, Some(42));
+        assert_eq!(error, None);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "logged-in state should fetch the balance once"
+        );
+
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -4378,7 +4944,7 @@ mod tests {
             }),
         );
 
-        let request = state.client.get("http://127.0.0.1:9/v1/ai-options");
+        let request = state.client.get("http://127.0.0.1:9/api/user/models");
         let request = apply_user_auth_header(request, &state, &config).await;
         let built = request.build().expect("request should build");
 
@@ -4429,8 +4995,8 @@ mod tests {
         let state = DesktopSharedState {
             client: Client::builder().build().expect("client should build"),
             config_path: Arc::new(config_path),
-            ai_option_catalog_cache_path: Arc::new(
-                temp_directory.path().join("ai-options-catalog.cache"),
+            model_catalog_cache_path: Arc::new(
+                temp_directory.path().join("models-catalog.cache"),
             ),
             auth_session_path: Arc::new(temp_directory.path().join("auth-session.bin")),
             auth_key_path: Arc::new(temp_directory.path().join("auth-key.bin")),
@@ -4446,7 +5012,8 @@ mod tests {
                 },
                 shutdown_tx: None,
                 auth_session: None,
-                unavailable_ai_option_notices: Vec::new(),
+                unavailable_model_notices: Vec::new(),
+                last_catalog_refresh: CatalogRefreshState::None,
             })),
             active_request_count: Arc::new(AtomicU32::new(0)),
         };
@@ -4537,7 +5104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_chat_completions_handler_rejects_when_no_ai_option_is_selected() {
+    async fn local_chat_completions_handler_rejects_when_no_model_is_selected() {
         let temp_directory = tempdir().expect("tempdir should be created");
         let config_path = temp_directory.path().join("desktop-config.json");
         let config = test_config_with_group(
@@ -4554,8 +5121,8 @@ mod tests {
         let state = DesktopSharedState {
             client: Client::builder().build().expect("client should build"),
             config_path: Arc::new(config_path),
-            ai_option_catalog_cache_path: Arc::new(
-                temp_directory.path().join("ai-options-catalog.cache"),
+            model_catalog_cache_path: Arc::new(
+                temp_directory.path().join("models-catalog.cache"),
             ),
             auth_session_path: Arc::new(temp_directory.path().join("auth-session.bin")),
             auth_key_path: Arc::new(temp_directory.path().join("auth-key.bin")),
@@ -4577,7 +5144,8 @@ mod tests {
                     user_id: Some("user-1".to_string()),
                     expires_at: None,
                 }),
-                unavailable_ai_option_notices: Vec::new(),
+                unavailable_model_notices: Vec::new(),
+                last_catalog_refresh: CatalogRefreshState::None,
             })),
             active_request_count: Arc::new(AtomicU32::new(0)),
         };
@@ -4604,20 +5172,20 @@ mod tests {
             .expect("response body should be readable");
         let payload: OpenAiErrorEnvelope =
             serde_json::from_slice(&body).expect("response body should be valid json");
-        assert_eq!(payload.error.code, "NO_AI_OPTION_SELECTED");
-        assert_eq!(payload.error.message, NO_AI_OPTION_SELECTED_USER_MESSAGE);
+        assert_eq!(payload.error.code, "NO_MODEL_SELECTED");
+        assert_eq!(payload.error.message, NO_MODEL_SELECTED_USER_MESSAGE);
 
         let runtime = state.inner.lock().await;
         assert_eq!(
             runtime.proxy_status.last_request_status,
-            "No AI option selected."
+            "No model selected."
         );
         assert!(runtime
             .proxy_status
             .last_error_message
             .as_deref()
             .unwrap_or_default()
-            .contains("No AI option is selected"));
+            .contains("No model is selected"));
     }
 
     #[tokio::test]
@@ -4629,7 +5197,7 @@ mod tests {
             String::new(),
             Some(7788),
             "zg-local-test",
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             "device-1",
             false,
         );
@@ -4638,8 +5206,8 @@ mod tests {
         let state = DesktopSharedState {
             client: Client::builder().build().expect("client should build"),
             config_path: Arc::new(config_path),
-            ai_option_catalog_cache_path: Arc::new(
-                temp_directory.path().join("ai-options-catalog.cache"),
+            model_catalog_cache_path: Arc::new(
+                temp_directory.path().join("models-catalog.cache"),
             ),
             auth_session_path: Arc::new(temp_directory.path().join("auth-session.bin")),
             auth_key_path: Arc::new(temp_directory.path().join("auth-key.bin")),
@@ -4655,7 +5223,8 @@ mod tests {
                 },
                 shutdown_tx: None,
                 auth_session: None,
-                unavailable_ai_option_notices: Vec::new(),
+                unavailable_model_notices: Vec::new(),
+                last_catalog_refresh: CatalogRefreshState::None,
             })),
             active_request_count: Arc::new(AtomicU32::new(0)),
         };
@@ -4707,7 +5276,7 @@ mod tests {
             "user-1".to_string(),
             Some(7788),
             "zg-local-test",
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             "device-1",
             false,
         );
@@ -4716,8 +5285,8 @@ mod tests {
         let shared_state = DesktopSharedState {
             client: Client::builder().build().expect("client should build"),
             config_path: Arc::new(config_path),
-            ai_option_catalog_cache_path: Arc::new(
-                temp_directory.path().join("ai-options-catalog.cache"),
+            model_catalog_cache_path: Arc::new(
+                temp_directory.path().join("models-catalog.cache"),
             ),
             auth_session_path: Arc::new(temp_directory.path().join("auth-session.bin")),
             auth_key_path: Arc::new(temp_directory.path().join("auth-key.bin")),
@@ -4733,7 +5302,8 @@ mod tests {
                 },
                 shutdown_tx: None,
                 auth_session: None,
-                unavailable_ai_option_notices: Vec::new(),
+                unavailable_model_notices: Vec::new(),
+                last_catalog_refresh: CatalogRefreshState::None,
             })),
             active_request_count: Arc::new(AtomicU32::new(0)),
         };
@@ -4742,7 +5312,7 @@ mod tests {
             shared_state.inner.clone(),
             shared_state.client.clone(),
             shared_state.config_path.clone(),
-            shared_state.ai_option_catalog_cache_path.clone(),
+            shared_state.model_catalog_cache_path.clone(),
             shared_state.auth_session_path.clone(),
             shared_state.auth_key_path.clone(),
             shared_state.privacy_keywords.clone(),
@@ -4790,11 +5360,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_proxy_forwards_json_requests_with_ai_option_ids_and_headers() {
+    async fn local_proxy_rewrites_client_model_to_group_model_with_headers() {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
+        // 分组选定的真实 model：客户端发来的占位 model 应被改写成集合内的某一个。
+        let group_models = vec!["gpt-4o-mini".to_string(), "claude-3".to_string()];
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            group_models.clone(),
             vec!["private key".to_string()],
             false,
         )
@@ -4808,10 +5380,10 @@ mod tests {
                 format!("Bearer {}", local.local_key),
             )
             .json(&json!({
+              // 客户端发的 model 无意义，应被分组所选 model 覆盖丢弃。
               "model": "zebragate_model",
               "messages": [{ "role": "user", "content": "hello" }],
-              "stream": false,
-              "ai_option_ids": ["client-ai-option-should-be-overridden"]
+              "stream": false
             }))
             .send()
             .await
@@ -4829,11 +5401,17 @@ mod tests {
             .iter()
             .find(|request| request.path == "/v1/openai/chat/completions")
             .expect("remote completion request should be recorded");
-        assert_eq!(completion_request.body["model"], json!("zebragate_model"));
-        assert_eq!(
-            completion_request.body["ai_option_ids"],
-            json!(["ai-option-openai-mock"])
+        // 真实模型由分组决定：后端收到的 model 必须落在分组所选 model 集合内，
+        // 且客户端的占位 model 已被丢弃；旧的 ai_option_ids 字段不再注入。
+        let forwarded_model = completion_request.body["model"]
+            .as_str()
+            .expect("forwarded model should be a string");
+        assert!(
+            group_models.iter().any(|model| model == forwarded_model),
+            "forwarded model {forwarded_model} must be one of the group's selected models"
         );
+        assert_ne!(completion_request.body["model"], json!("zebragate_model"));
+        assert!(completion_request.body.get("ai_option_ids").is_none());
         assert_eq!(completion_request.body["stream"], json!(false));
         assert_eq!(
             completion_request.body["messages"][0]["content"],
@@ -4878,7 +5456,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::StreamSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec!["private key".to_string()],
             false,
         )
@@ -4927,7 +5505,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec![
                 "private key".to_string(),
                 "seed phrase".to_string(),
@@ -4971,7 +5549,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec!["private key".to_string()],
             true,
         )
@@ -5015,7 +5593,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_proxy_does_not_call_remote_when_no_ai_option_is_selected() {
+    async fn local_proxy_does_not_call_remote_when_no_model_is_selected() {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
@@ -5056,7 +5634,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             Vec::new(),
             false,
         )
@@ -5094,20 +5672,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_proxy_routes_ai_option_ids_per_group_local_key() {
+    async fn local_proxy_routes_to_group_model_by_local_key() {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
+        // 两个分组各自选定不同的真实 model；local key 决定走哪个分组，
+        // 转发给后端的 model 必须是「该 key 对应分组」选定的 model（客户端 model 无关）。
         let local = spawn_local_proxy_server_with_extra_groups(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["gpt-4o-mini".to_string()],
             Vec::new(),
             false,
-            vec![(
-                "zg-local-second-group",
-                vec!["ai-option-claude-mock".to_string()],
-            )],
+            vec![("zg-local-second-group", vec!["claude-mock-model".to_string()])],
         )
         .await;
 
+        // 默认分组：客户端发任意占位 model，应被改写成该分组的 gpt-4o-mini。
         let default_group_response = local
             .client
             .post(format!("{}/v1/chat/completions", local.base_url))
@@ -5125,6 +5703,7 @@ mod tests {
             .expect("default group request should return a response");
         assert_eq!(default_group_response.status(), ReqwestStatusCode::OK);
 
+        // 第二个分组：同样发占位 model，应被改写成该分组的 claude-mock-model。
         let second_group_local_key = local.extra_group_local_keys[0].clone();
         let second_group_response = local
             .client
@@ -5156,10 +5735,8 @@ mod tests {
                 request.body["messages"][0]["content"] == json!("hello from default group")
             })
             .expect("default group completion request should be recorded");
-        assert_eq!(
-            default_group_request.body["ai_option_ids"],
-            json!(["ai-option-openai-mock"])
-        );
+        // key 决定分组，分组决定 model：默认分组转发其选定的 gpt-4o-mini。
+        assert_eq!(default_group_request.body["model"], json!("gpt-4o-mini"));
 
         let second_group_request = completion_requests
             .iter()
@@ -5167,10 +5744,7 @@ mod tests {
                 request.body["messages"][0]["content"] == json!("hello from second group")
             })
             .expect("second group completion request should be recorded");
-        assert_eq!(
-            second_group_request.body["ai_option_ids"],
-            json!(["ai-option-claude-mock"])
-        );
+        assert_eq!(second_group_request.body["model"], json!("claude-mock-model"));
 
         shutdown_test_server(local.shutdown_tx).await;
         shutdown_test_server(remote.shutdown_tx).await;
@@ -5181,7 +5755,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server_with_extra_groups(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["gpt-4o-mini".to_string()],
             Vec::new(),
             false,
             vec![("zg-local-empty-group", Vec::new())],
@@ -5232,10 +5806,9 @@ mod tests {
             .filter(|request| request.path == "/v1/openai/chat/completions")
             .collect::<Vec<_>>();
         assert_eq!(completion_requests.len(), 1);
-        assert_eq!(
-            completion_requests[0].body["ai_option_ids"],
-            json!(["ai-option-openai-mock"])
-        );
+        // 非空分组正常转发：model 被改写成该分组选定的真实 model，不注入 ai_option_ids（旧字段）。
+        assert_eq!(completion_requests[0].body["model"], json!("gpt-4o-mini"));
+        assert!(completion_requests[0].body.get("ai_option_ids").is_none());
 
         shutdown_test_server(local.shutdown_tx).await;
         shutdown_test_server(remote.shutdown_tx).await;
@@ -5245,7 +5818,7 @@ mod tests {
     async fn local_proxy_returns_clear_bad_gateway_when_remote_is_unreachable() {
         let local = spawn_local_proxy_server(
             "http://127.0.0.1:9".to_string(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec!["private key".to_string()],
             false,
         )
@@ -5285,7 +5858,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec!["private key".to_string(), "seed phrase".to_string()],
             false,
         )
@@ -5319,7 +5892,7 @@ mod tests {
         let remote = spawn_mock_remote_server(MockRemoteBehavior::JsonSuccess).await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec!["private key".to_string(), "seed phrase".to_string()],
             false,
         )
@@ -5361,7 +5934,7 @@ mod tests {
         .await;
         let local = spawn_local_proxy_server(
             remote.base_url.clone(),
-            vec!["ai-option-openai-mock".to_string()],
+            vec!["zebragate_model".to_string()],
             vec!["private key".to_string()],
             false,
         )
@@ -5408,13 +5981,13 @@ mod tests {
 
     async fn spawn_local_proxy_server(
         remote_api_base_url: String,
-        selected_ai_option_ids: Vec<String>,
+        selected_models: Vec<String>,
         privacy_keywords: Vec<String>,
         privacy_protection_enabled: bool,
     ) -> SpawnedTestServer {
         spawn_local_proxy_server_with_extra_groups(
             remote_api_base_url,
-            selected_ai_option_ids,
+            selected_models,
             privacy_keywords,
             privacy_protection_enabled,
             Vec::new(),
@@ -5424,7 +5997,7 @@ mod tests {
 
     async fn spawn_local_proxy_server_with_extra_groups(
         remote_api_base_url: String,
-        selected_ai_option_ids: Vec<String>,
+        selected_models: Vec<String>,
         privacy_keywords: Vec<String>,
         privacy_protection_enabled: bool,
         extra_groups: Vec<(&str, Vec<String>)>,
@@ -5436,7 +6009,7 @@ mod tests {
             "user-1".to_string(),
             None,
             "zg-local-test",
-            selected_ai_option_ids,
+            selected_models,
             "device-1",
             privacy_protection_enabled,
         );
@@ -5444,13 +6017,14 @@ mod tests {
             .iter()
             .map(|(local_key, _)| local_key.to_string())
             .collect::<Vec<_>>();
-        for (local_key, group_selected_ai_option_ids) in extra_groups {
+        for (local_key, group_selected_models) in extra_groups {
             config.groups.push(DesktopGroup {
                 id: Uuid::new_v4().to_string(),
                 name: local_key.to_string(),
                 local_key: local_key.to_string(),
                 last_used_at: None,
-                selected_ai_option_ids: group_selected_ai_option_ids,
+                selected_models: group_selected_models,
+                defaults_applied: true,
             });
         }
         persist_desktop_config(&config_path, &config).expect("config should persist");
@@ -5459,8 +6033,8 @@ mod tests {
         let shared_state = DesktopSharedState {
             client: Client::builder().build().expect("client should build"),
             config_path: Arc::new(config_path),
-            ai_option_catalog_cache_path: Arc::new(
-                temp_directory.path().join("ai-options-catalog.cache"),
+            model_catalog_cache_path: Arc::new(
+                temp_directory.path().join("models-catalog.cache"),
             ),
             auth_session_path: Arc::new(temp_directory.path().join("auth-session.bin")),
             auth_key_path: Arc::new(temp_directory.path().join("auth-key.bin")),
@@ -5482,7 +6056,8 @@ mod tests {
                     user_id: Some("user-1".to_string()),
                     expires_at: None,
                 }),
-                unavailable_ai_option_notices: Vec::new(),
+                unavailable_model_notices: Vec::new(),
+                last_catalog_refresh: CatalogRefreshState::None,
             })),
             active_request_count: Arc::new(AtomicU32::new(0)),
         };
@@ -5491,7 +6066,7 @@ mod tests {
             shared_state.inner.clone(),
             shared_state.client.clone(),
             shared_state.config_path.clone(),
-            shared_state.ai_option_catalog_cache_path.clone(),
+            shared_state.model_catalog_cache_path.clone(),
             shared_state.auth_session_path.clone(),
             shared_state.auth_key_path.clone(),
             shared_state.privacy_keywords.clone(),
@@ -5537,7 +6112,7 @@ mod tests {
         };
 
         let app = Router::new()
-            .route("/v1/ai-options", get(mock_remote_ai_options_handler))
+            .route("/api/user/models", get(mock_remote_user_models_handler))
             .route("/v1/auth/refresh", post(mock_remote_auth_refresh_handler))
             .route(
                 "/v1/openai/chat/completions",
@@ -5621,37 +6196,12 @@ mod tests {
         next.run(request).await
     }
 
-    async fn mock_remote_ai_options_handler() -> impl IntoResponse {
-        Json(AiOptionCatalogResponse {
-            ai_options: vec![
-                SelectableAiOption {
-                    ai_option_id: "ai-option-openai-mock".to_string(),
-                    provider_label: "OpenAI Mock".to_string(),
-                    model_label: "zebragate_model".to_string(),
-                    public_name: "OpenAI Mock".to_string(),
-                    display_config_summary: "Mock AI option".to_string(),
-                    display_badges: Vec::new(),
-                    credit_multiplier: 1.0,
-                    is_recommended: true,
-                    status: ProviderStatus::Healthy,
-                    disable_reason: None,
-                    sort_order: 0,
-                },
-                SelectableAiOption {
-                    ai_option_id: "ai-option-claude-mock".to_string(),
-                    provider_label: "Claude Mock".to_string(),
-                    model_label: "zebragate_model".to_string(),
-                    public_name: "Claude Mock".to_string(),
-                    display_config_summary: "Mock AI option".to_string(),
-                    display_badges: Vec::new(),
-                    credit_multiplier: 1.0,
-                    is_recommended: true,
-                    status: ProviderStatus::Healthy,
-                    disable_reason: None,
-                    sort_order: 1,
-                },
-            ],
-        })
+    async fn mock_remote_user_models_handler() -> impl IntoResponse {
+        Json(json!({
+          "success": true,
+          "message": "",
+          "data": ["openai-mock-model", "claude-mock-model"],
+        }))
     }
 
     async fn mock_remote_auth_refresh_handler(Json(payload): Json<JsonValue>) -> impl IntoResponse {
