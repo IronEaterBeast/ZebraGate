@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import {
   getAuthStatus,
@@ -80,6 +81,7 @@ function resolveViewedGroupId(
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<DesktopRuntimeSnapshot | null>(null);
   const [viewedGroupId, setViewedGroupId] = useState<string | null>(() => readStoredViewedGroupId(null));
   const [authStatus, setAuthStatus] = useState<AuthStatusSnapshot | null>(null);
@@ -202,7 +204,7 @@ export default function App() {
   }
 
   if (!runtimeSnapshot) {
-    return <main className="shell loading-shell">Loading...</main>;
+    return <main className="shell loading-shell">{t("common.loading")}</main>;
   }
 
   const viewedGroup = runtimeSnapshot.groups.find((group) => group.id === viewedGroupId) ?? null;

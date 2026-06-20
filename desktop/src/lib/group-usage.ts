@@ -1,6 +1,8 @@
-export function formatGroupLastUsedAt(lastUsedAt: number | null): string {
+import type { TFunction } from "i18next";
+
+export function formatGroupLastUsedAt(t: TFunction, lastUsedAt: number | null): string {
   if (lastUsedAt === null) {
-    return "从未使用";
+    return t("common.neverUsed");
   }
 
   const date = new Date(lastUsedAt * 1000);

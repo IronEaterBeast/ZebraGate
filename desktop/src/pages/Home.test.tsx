@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import i18n from "../i18n";
 import { buildCurrentStatusReport, HomePage } from "./Home";
 import type { DesktopGroupSummary, DesktopRuntimeSnapshot } from "../lib/api-client";
+
+const t = i18n.getFixedT(null, null);
 
 function createRuntimeSnapshot(): DesktopRuntimeSnapshot {
   return {
@@ -114,6 +117,7 @@ describe("HomePage", () => {
 
     expect(
       buildCurrentStatusReport({
+        t,
         error: null,
         runtimeSnapshot,
         selectedAiCount: 2,
@@ -123,6 +127,7 @@ describe("HomePage", () => {
 
     expect(
       buildCurrentStatusReport({
+        t,
         error: null,
         runtimeSnapshot,
         selectedAiCount: 0,
@@ -142,6 +147,7 @@ describe("HomePage", () => {
 
     expect(
       buildCurrentStatusReport({
+        t,
         error: null,
         runtimeSnapshot,
         selectedAiCount: 1,
@@ -159,6 +165,7 @@ describe("HomePage", () => {
 
     expect(
       buildCurrentStatusReport({
+        t,
         error: null,
         runtimeSnapshot,
         selectedAiCount: 1,
@@ -177,6 +184,7 @@ describe("HomePage", () => {
 
     expect(
       buildCurrentStatusReport({
+        t,
         error: null,
         runtimeSnapshot,
         selectedAiCount: 1,

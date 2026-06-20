@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   clearUnavailableModelNotices,
   getModelCatalog,
@@ -27,6 +28,7 @@ function parseGroupIdFromHash(hash: string): string | null {
 }
 
 export function GroupManagementWindow() {
+  const { t } = useTranslation();
   const [groups, setGroups] = useState<DesktopGroupSummary[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(() =>
     parseGroupIdFromHash(window.location.hash)
@@ -102,7 +104,7 @@ export function GroupManagementWindow() {
     } catch (loadError) {
       // 仅在 IPC 本身异常时兜底；远程拉取的成败已体现在快照 catalogError 上。
       setCatalogError(
-        loadError instanceof Error ? loadError.message : "无法读取本地 model 列表。"
+        loadError instanceof Error ? loadError.message : t("group.readLocalCatalogFailed")
       );
     }
   }
@@ -126,7 +128,7 @@ export function GroupManagementWindow() {
       void performSilentCatalogRefresh();
     } catch (loadError) {
       setCatalogError(
-        loadError instanceof Error ? loadError.message : "无法读取本地 model 列表。"
+        loadError instanceof Error ? loadError.message : t("group.readLocalCatalogFailed")
       );
     } finally {
       setIsLoading(false);
@@ -160,10 +162,10 @@ export function GroupManagementWindow() {
       }
       await loadGroups();
       setRefreshFeedbackKind("success");
-      setRefreshFeedback("刷新成功");
+      setRefreshFeedback(t("group.refreshSuccess"));
     } catch {
       setRefreshFeedbackKind("error");
-      setRefreshFeedback("刷新失败，请稍后重试");
+      setRefreshFeedback(t("group.refreshFailed"));
     } finally {
       setIsRefreshingCatalog(false);
     }

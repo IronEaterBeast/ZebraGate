@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorLogWindow } from "./ErrorLogWindow";
 import { GroupManagementWindow } from "./GroupManagementWindow";
+import "./i18n";
 import "./styles.css";
 
 // 启动耗时打点：performance.now() 以本页文档开始加载为 0。

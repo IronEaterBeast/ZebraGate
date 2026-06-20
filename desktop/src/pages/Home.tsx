@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   openStatusReportWindow,
@@ -10,6 +12,7 @@ import {
 import { formatGroupLastUsedAt } from "../lib/group-usage";
 
 function CopyButton({ value }: { value: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   async function handleCopy(): Promise<void> {
@@ -23,8 +26,8 @@ function CopyButton({ value }: { value: string }) {
   }
 
   return (
-    <button className="icon-button" onClick={() => void handleCopy()} title="Copy" type="button">
-      {copied ? "已复制" : "复制"}
+    <button className="icon-button" onClick={() => void handleCopy()} title={t("common.copy")} type="button">
+      {copied ? t("common.copied") : t("common.copy")}
     </button>
   );
 }
@@ -54,6 +57,7 @@ export function HomePage({
   selectedAiCount: number;
   viewedGroup: DesktopGroupSummary | null;
 }) {
+  const { t } = useTranslation();
   const infoListRef = useRef<HTMLDivElement>(null);
   const statusBarRef = useRef<HTMLElement>(null);
 
@@ -66,8 +70,8 @@ export function HomePage({
   }, [onRefresh]);
 
   const currentStatusReport = useMemo(
-    () => buildCurrentStatusReport({ error, runtimeSnapshot, selectedAiCount, viewedGroup }),
-    [error, runtimeSnapshot, selectedAiCount, viewedGroup]
+    () => buildCurrentStatusReport({ t, error, runtimeSnapshot, selectedAiCount, viewedGroup }),
+    [t, error, runtimeSnapshot, selectedAiCount, viewedGroup]
   );
 
   useEffect(() => {
@@ -90,7 +94,10 @@ export function HomePage({
   }, [runtimeSnapshot, currentStatusReport, viewedGroup]);
 
   async function handleSignOutClick(): Promise<void> {
-    const confirmed = await confirm("确定要退出登录吗？", { title: "退出登录", kind: "warning" });
+    const confirmed = await confirm(t("home.signOutConfirmMessage"), {
+      title: t("home.signOutConfirmTitle"),
+      kind: "warning"
+    });
     if (confirmed) {
       await onLogout();
     }
@@ -99,10 +106,10 @@ export function HomePage({
   if (!authStatus?.loggedIn) {
     return (
       <div className="signin-prompt">
-        <span className="signin-title">ZebraGate</span>
+        <span className="signin-title">{t("home.appName")}</span>
         {error ? <div className="error-banner">{error}</div> : null}
         <button onClick={() => void onLogin()} disabled={isBusy} type="button">
-          Sign In
+          {t("home.signIn")}
         </button>
       </div>
     );
@@ -128,7 +135,7 @@ export function HomePage({
 
         <div className="info-list" ref={infoListRef}>
           <div className="info-row">
-            <span className="info-label">分组</span>
+            <span className="info-label">{t("home.group")}</span>
             <select
               className="info-value"
               disabled={isBusy || groups.length === 0}
@@ -137,7 +144,7 @@ export function HomePage({
             >
               {groups.map((group) => (
                 <option key={group.id} value={group.id}>
-                  {group.name}（已选 {group.selectedModelCount}）
+                  {t("home.groupOption", { name: group.name, count: group.selectedModelCount })}
                 </option>
               ))}
             </select>
@@ -145,43 +152,43 @@ export function HomePage({
               className="icon-button"
               disabled={isBusy}
               onClick={onOpenGroupManagement}
-              title="管理分组"
+              title={t("common.manageGroup")}
               type="button"
             >
-              管理
+              {t("home.manage")}
             </button>
           </div>
 
           <div className="info-row">
-            <span className="info-label">Base URL</span>
+            <span className="info-label">{t("home.baseUrl")}</span>
             <span className="info-value">{baseUrl}</span>
             <CopyButton value={baseUrl} />
           </div>
           <div className="info-row">
-            <span className="info-label">Key</span>
+            <span className="info-label">{t("home.key")}</span>
             <span className="info-value">{viewedGroup?.localKey ?? ""}</span>
             <CopyButton value={viewedGroup?.localKey ?? ""} />
           </div>
           <div className="info-row">
-            <span className="info-label">Model</span>
+            <span className="info-label">{t("home.model")}</span>
             <span className="info-value">{runtimeSnapshot.model}</span>
             <CopyButton value={runtimeSnapshot.model} />
           </div>
           <div className="info-row">
-            <span className="info-label">最后使用</span>
-            <span className="info-value">{formatGroupLastUsedAt(viewedGroup?.lastUsedAt ?? null)}</span>
+            <span className="info-label">{t("home.lastUsed")}</span>
+            <span className="info-value">{formatGroupLastUsedAt(t, viewedGroup?.lastUsedAt ?? null)}</span>
             <span />
           </div>
         </div>
       </div>
 
       <footer className="status-bar" ref={statusBarRef}>
-        <span className="account-name">{authStatus.email ?? "unknown"}</span>
+        <span className="account-name">{authStatus.email ?? t("common.unknown")}</span>
         <button
           className="status-icon-button"
           onClick={() => void handleSignOutClick()}
           disabled={isBusy}
-          title="Sign Out"
+          title={t("home.signOut")}
           type="button"
         >
           ⏻
@@ -191,19 +198,21 @@ export function HomePage({
           <button
             className="status-error-button"
             onClick={() => void openStatusReportWindow(currentStatusReport.items)}
-            title="查看当前错误"
+            title={t("home.viewCurrentError")}
             type="button"
           >
-            ERROR {currentStatusReport.items.length}
+            {t("home.error", { count: currentStatusReport.items.length })}
           </button>
         ) : null}
-        <span>Credits: {runtimeSnapshot.credits ?? "Unavailable"}</span>
-        <span className={selectedAiCount < 1 ? "status-error" : undefined}>已选 AI: {selectedAiCount}</span>
+        <span>{t("home.credits", { value: runtimeSnapshot.credits ?? t("home.creditsUnavailable") })}</span>
+        <span className={selectedAiCount < 1 ? "status-error" : undefined}>
+          {t("home.selectedAi", { count: selectedAiCount })}
+        </span>
         <button
           className="status-icon-button"
           onClick={onOpenGroupManagement}
           disabled={isBusy}
-          title="管理分组"
+          title={t("common.manageGroup")}
           type="button"
         >
           ⚙
@@ -214,11 +223,13 @@ export function HomePage({
 }
 
 export function buildCurrentStatusReport({
+  t,
   error,
   runtimeSnapshot,
   selectedAiCount,
   viewedGroup
 }: {
+  t: TFunction;
   error: string | null;
   runtimeSnapshot: DesktopRuntimeSnapshot;
   selectedAiCount: number;
@@ -231,13 +242,13 @@ export function buildCurrentStatusReport({
   }
 
   if (runtimeSnapshot.remoteApiErrorMessage) {
-    items.push(`无法连接 ZebraGate API：${runtimeSnapshot.remoteApiErrorMessage}`);
+    items.push(t("home.statusRemoteApiError", { message: runtimeSnapshot.remoteApiErrorMessage }));
   }
 
   if (!viewedGroup) {
-    items.push("当前没有可用分组。");
+    items.push(t("home.statusNoGroup"));
   } else if (selectedAiCount < 1) {
-    items.push("当前分组尚未选择 AI。本地服务可以启动，但客户端使用该分组请求时会被本地拒绝。");
+    items.push(t("home.statusNoAiSelected"));
   }
 
   if (!runtimeSnapshot.proxyStatus.running) {

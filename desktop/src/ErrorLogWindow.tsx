@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 
 const ERROR_LOG_WINDOW_WIDTH = 480;
@@ -27,6 +28,7 @@ function parseErrorsFromHash(hash: string): string[] {
 }
 
 export function ErrorLogWindow() {
+  const { t } = useTranslation();
   const [errors, setErrors] = useState<string[]>(() => parseErrorsFromHash(window.location.hash));
   const [listMaxHeight, setListMaxHeight] = useState<number | null>(null);
   const titleRef = useRef<HTMLElement>(null);
@@ -73,7 +75,7 @@ export function ErrorLogWindow() {
   return (
     <div className="error-log-shell">
       <header className="title-bar" ref={titleRef}>
-        <span className="account-name">当前错误</span>
+        <span className="account-name">{t("errorLog.title")}</span>
       </header>
       <div
         className="info-list error-log-list"
@@ -84,7 +86,7 @@ export function ErrorLogWindow() {
         }}
       >
         {errors.length === 0 ? (
-          <div className="error-log-empty muted">当前没有错误。</div>
+          <div className="error-log-empty muted">{t("errorLog.empty")}</div>
         ) : (
           errors.map((message, index) => (
             <div className="error-banner error-log-item" key={index}>

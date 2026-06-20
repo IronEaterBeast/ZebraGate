@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import {
   createGroup,
@@ -19,18 +21,23 @@ export function canDeleteSelectedGroup(groups: DesktopGroupSummary[], selectedGr
   return selectedGroup !== null && groups.length > 1;
 }
 
-export function formatModelCatalogFetchedAt(fetchedAt: number | null): string {
+export function formatModelCatalogFetchedAt(t: TFunction, fetchedAt: number | null): string {
   if (fetchedAt === null) {
-    return "从未更新";
+    return t("group.catalogNeverUpdated");
   }
 
   return new Date(fetchedAt * 1000).toLocaleString();
 }
 
-export function formatUnavailableModelNoticeText(notices: UnavailableModelNotice[]): string {
+export function formatUnavailableModelNoticeText(t: TFunction, notices: UnavailableModelNotice[]): string {
   return [
-    "以下 model 已不再可用，并已从分组中移除，可能影响生成效果：",
-    ...notices.map((notice) => `${notice.groupName}：${notice.modelNames.join("、")}`)
+    t("group.unavailableModelText"),
+    ...notices.map((notice) =>
+      t("group.unavailableModelLine", {
+        groupName: notice.groupName,
+        modelNames: notice.modelNames.join(t("group.modelNameSeparator"))
+      })
+    )
   ].join("\n");
 }
 
@@ -41,6 +48,7 @@ export function sortModelsByName(models: string[]): string[] {
 }
 
 function CopyButton({ value }: { value: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   async function handleCopy(): Promise<void> {
@@ -54,8 +62,8 @@ function CopyButton({ value }: { value: string }) {
   }
 
   return (
-    <button className="icon-button" onClick={() => void handleCopy()} title="Copy" type="button">
-      {copied ? "已复制" : "复制"}
+    <button className="icon-button" onClick={() => void handleCopy()} title={t("common.copy")} type="button">
+      {copied ? t("common.copied") : t("common.copy")}
     </button>
   );
 }
@@ -101,6 +109,7 @@ export function GroupManagementPage({
   selectedGroup: DesktopGroupSummary | null;
   unavailableModelNotices: UnavailableModelNotice[];
 }) {
+  const { t } = useTranslation();
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [isSavingNewGroup, setIsSavingNewGroup] = useState(false);
@@ -112,8 +121,8 @@ export function GroupManagementPage({
   const [savingModels, setSavingModels] = useState<string[]>([]);
 
   const unavailableModelNoticeText = useMemo(
-    () => formatUnavailableModelNoticeText(unavailableModelNotices),
-    [unavailableModelNotices]
+    () => formatUnavailableModelNoticeText(t, unavailableModelNotices),
+    [t, unavailableModelNotices]
   );
 
   const sortedModels = useMemo(() => sortModelsByName(models), [models]);
@@ -181,11 +190,11 @@ export function GroupManagementPage({
       return;
     }
     if (!canDeleteSelectedGroup(groups, selectedGroup)) {
-      await message("只剩最后一个分组时不能删除。", { title: "无法删除", kind: "warning" });
+      await message(t("group.cannotDeleteLastMessage"), { title: t("group.cannotDeleteTitle"), kind: "warning" });
       return;
     }
-    const confirmed = await confirm(`确定要删除分组"${selectedGroup.name}"吗？该操作无法撤销。`, {
-      title: "删除分组",
+    const confirmed = await confirm(t("group.deleteConfirmMessage", { name: selectedGroup.name }), {
+      title: t("group.deleteConfirmTitle"),
       kind: "warning"
     });
     if (!confirmed) {
@@ -193,9 +202,9 @@ export function GroupManagementPage({
     }
     if (shouldConfirmRecentGroupUse(selectedGroup.lastUsedAt)) {
       const recentlyUsedConfirmed = await confirm(
-        `分组"${selectedGroup.name}"在最近 7 天内被客户端使用过。删除后，正在使用该分组密钥的软件需要重新配置。仍然删除吗？`,
+        t("group.deleteRecentConfirmMessage", { name: selectedGroup.name }),
         {
-          title: "确认删除近期使用的分组",
+          title: t("group.deleteRecentConfirmTitle"),
           kind: "warning"
         }
       );
@@ -246,22 +255,24 @@ export function GroupManagementPage({
   return (
     <div className="app-shell">
       <header className="title-bar">
-        <span className="account-name">分组管理</span>
+        <span className="account-name">{t("group.title")}</span>
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}
       {catalogError ? <div className="error-banner">{catalogError}</div> : null}
-      {isCatalogStale ? <div className="warning-banner">model 列表已超过 2 天未更新，可能影响当前使用。</div> : null}
+      {isCatalogStale ? <div className="warning-banner">{t("group.catalogStaleWarning")}</div> : null}
       {unavailableModelNotices.length > 0 ? (
         <div className="unavailable-notice-banner">
           <div className="unavailable-notice-header">
             <span className="unavailable-notice-icon">⚠</span>
-            <span className="unavailable-notice-title">以下 model 已不再可用，并已从分组中移除，可能影响生成效果</span>
+            <span className="unavailable-notice-title">{t("group.unavailableModelTitle")}</span>
           </div>
           <ul className="unavailable-notice-list">
             {unavailableModelNotices.map((notice) => (
               <li key={notice.groupName}>
-                <span className="unavailable-notice-group">{notice.groupName}</span>：<span className="unavailable-notice-names">{notice.modelNames.join("、")}</span>
+                <span className="unavailable-notice-group">{notice.groupName}</span>
+                {t("group.groupModelSeparator")}
+                <span className="unavailable-notice-names">{notice.modelNames.join(t("group.modelNameSeparator"))}</span>
               </li>
             ))}
           </ul>
@@ -273,7 +284,7 @@ export function GroupManagementPage({
               onClick={() => void handleClearUnavailableModelNotices()}
               type="button"
             >
-              {isClearingUnavailableModelNotices ? "确认中…" : "确认"}
+              {isClearingUnavailableModelNotices ? t("common.confirming") : t("common.confirm")}
             </button>
           </div>
         </div>
@@ -281,7 +292,7 @@ export function GroupManagementPage({
 
       <div className="info-list">
         <div className="info-row">
-          <span className="info-label">分组</span>
+          <span className="info-label">{t("group.group")}</span>
           <select
             className="info-value"
             disabled={isBusy || groups.length === 0}
@@ -290,12 +301,12 @@ export function GroupManagementPage({
           >
             {groups.map((group) => (
               <option key={group.id} value={group.id}>
-                {group.name}（已选 {group.selectedModelCount}）
+                {t("group.groupOption", { name: group.name, count: group.selectedModelCount })}
               </option>
             ))}
           </select>
           <button className="icon-button" disabled={isBusy} onClick={openCreateGroupDialog} type="button">
-            新建分组
+            {t("group.createGroup")}
           </button>
         </div>
 
@@ -306,7 +317,7 @@ export function GroupManagementPage({
                 className="text-input group-name-input"
                 disabled={isSavingNewGroup}
                 onChange={(event) => setNewGroupName(event.target.value)}
-                placeholder="新分组名称"
+                placeholder={t("group.newGroupNamePlaceholder")}
                 value={newGroupName}
               />
               <button
@@ -315,7 +326,7 @@ export function GroupManagementPage({
                 onClick={() => void handleCreateGroup()}
                 type="button"
               >
-                新建分组并立刻配置
+                {t("group.createGroupAndConfigure")}
               </button>
               <button
                 className="icon-button"
@@ -323,7 +334,7 @@ export function GroupManagementPage({
                 onClick={() => setIsCreatingGroup(false)}
                 type="button"
               >
-                取消
+                {t("common.cancel")}
               </button>
             </div>
           </div>
@@ -332,17 +343,17 @@ export function GroupManagementPage({
         {selectedGroup ? (
           <>
             <div className="info-row">
-              <span className="info-label">Key</span>
+              <span className="info-label">{t("group.key")}</span>
               <span className="info-value">{selectedGroup.localKey}</span>
               <CopyButton value={selectedGroup.localKey} />
             </div>
             <div className="info-row">
-              <span className="info-label">最后使用</span>
-              <span className="info-value">{formatGroupLastUsedAt(selectedGroup.lastUsedAt)}</span>
+              <span className="info-label">{t("group.lastUsed")}</span>
+              <span className="info-value">{formatGroupLastUsedAt(t, selectedGroup.lastUsedAt)}</span>
               <span />
             </div>
             <div className="info-row">
-              <span className="info-label">分组名</span>
+              <span className="info-label">{t("group.groupName")}</span>
               {isRenaming ? (
                 <>
                   <input
@@ -353,10 +364,10 @@ export function GroupManagementPage({
                   />
                   <div className="title-bar-actions">
                     <button className="icon-button" disabled={isBusy} onClick={() => void handleConfirmRename()} type="button">
-                      保存
+                      {t("common.save")}
                     </button>
                     <button className="icon-button" disabled={isBusy} onClick={() => setIsRenaming(false)} type="button">
-                      取消
+                      {t("common.cancel")}
                     </button>
                   </div>
                 </>
@@ -367,7 +378,7 @@ export function GroupManagementPage({
                   </span>
                   <div className="title-bar-actions">
                     <button className="icon-button" disabled={isBusy} onClick={startRename} type="button">
-                      重命名
+                      {t("group.rename")}
                     </button>
                     <button
                       className="icon-button"
@@ -375,15 +386,15 @@ export function GroupManagementPage({
                       onClick={() => void handleDeleteGroup()}
                       type="button"
                     >
-                      删除
+                      {t("group.delete")}
                     </button>
                   </div>
                 </>
               )}
             </div>
             <div className="info-row">
-              <span className="info-label">model 列表更新时间</span>
-              <span className="info-value">{formatModelCatalogFetchedAt(catalogFetchedAt)}</span>
+              <span className="info-label">{t("group.modelCatalogUpdatedAt")}</span>
+              <span className="info-value">{formatModelCatalogFetchedAt(t, catalogFetchedAt)}</span>
               <div className="title-bar-actions">
                 <button
                   className="icon-button"
@@ -391,7 +402,7 @@ export function GroupManagementPage({
                   onClick={() => void onRefreshCatalog()}
                   type="button"
                 >
-                  {isRefreshingCatalog ? "刷新中" : "刷新 model 列表"}
+                  {isRefreshingCatalog ? t("group.refreshing") : t("group.refreshModelCatalog")}
                 </button>
                 {refreshFeedback ? (
                   <span className={refreshFeedbackKind === "error" ? "refresh-feedback-error" : "muted"}>
@@ -404,14 +415,14 @@ export function GroupManagementPage({
         ) : null}
 
         {isLoading ? (
-          <div className="muted ai-option-row">加载中...</div>
+          <div className="muted ai-option-row">{t("group.loading")}</div>
         ) : (
           <>
             {!catalogError && models.length === 0 ? (
-              <div className="warning-banner">暂无可用 model，请联网后刷新。</div>
+              <div className="warning-banner">{t("group.noModelWarning")}</div>
             ) : null}
             {!catalogError && models.length > 0 && selectedModels.length === 0 ? (
-              <div className="warning-banner">未选择任何 model，将无法处理请求，请至少选择一个 model。</div>
+              <div className="warning-banner">{t("group.noModelSelectedWarning")}</div>
             ) : null}
             {sortedModels.map((model) => {
               const isSaving = savingModels.includes(model);

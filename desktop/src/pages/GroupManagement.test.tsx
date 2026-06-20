@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import i18n from "../i18n";
 import {
   GroupManagementPage,
   canDeleteSelectedGroup,
@@ -9,6 +10,8 @@ import {
   shouldConfirmRecentGroupUse
 } from "./GroupManagement";
 import type { DesktopGroupSummary } from "../lib/api-client";
+
+const t = i18n.getFixedT(null, null);
 
 function createGroups(): DesktopGroupSummary[] {
   return [
@@ -184,12 +187,12 @@ describe("GroupManagementPage", () => {
   });
 
   it("formats a missing catalog update time as never updated", () => {
-    expect(formatModelCatalogFetchedAt(null)).toBe("从未更新");
+    expect(formatModelCatalogFetchedAt(t, null)).toBe("从未更新");
   });
 
   it("formats unavailable model notices for copying", () => {
     expect(
-      formatUnavailableModelNoticeText([
+      formatUnavailableModelNoticeText(t, [
         { groupName: "default", modelNames: ["model-old", "model-older"] },
         { groupName: "other", modelNames: ["model-gone"] }
       ])

@@ -27,3 +27,13 @@
 
 ## Completion
 - 任务结束，或者任何需要等待用户确认的操作前（比如AskUserQuestion），使用 PowerShell 工具前台执行（不要使用 run_in_background/后台方式）notify.bat（绝对路径调用），并设置一个较短的超时时间（如 1-5 秒）。
+
+## 国际化（i18n）
+- 本项目需要支持多语言（不止中英文），因此所有面向用户的文案都必须走 i18n，不允许把文案硬编码进代码。
+- desktop 端已接入 react-i18next：
+  - 文案统一放在 `desktop/src/i18n/locales/<语言>.json`，当前默认且唯一语言是 `zh-CN`。
+  - 组件内用 `useTranslation()` 拿到 `t`，文案处写 `t("区域.键名")`；带变量用插值，如 `t("home.groupOption", { name, count })`。
+  - 非组件的纯函数若要输出面向用户的文案，把 `t: TFunction` 作为参数传入，不要在纯函数里直接写文案。
+  - 新增功能时，新文案先加到 `zh-CN.json`，再在代码里用 `t()` 引用。未来新增语言只需在 `locales` 下新增对应 json 并在 `i18n/index.ts` 的 resources 注册。
+- 兜底机制：`desktop/scripts/check-i18n.mjs` 会扫描 `src` 下的裸中文字符串字面量，发现即报错。它已接入 `pnpm lint`（`pnpm check:i18n` 可单独运行）。注释中的中文、语言包 json、测试文件中的中文断言不在检查范围内。
+- 提交前请确保 `pnpm lint` 通过——忘记用 `t()` 写了裸中文会被该检查拦下。

@@ -7,8 +7,9 @@
     "dev:webview": "vite",
     "build": "tauri build",
     "build:webview": "tsc --noEmit -p tsconfig.json && vite build",
-    "lint": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json && pnpm check:i18n",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "test:webview": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test": "pnpm test:webview && pnpm test:rust",
@@ -17,8 +18,10 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "2",
+    "i18next": "^26.3.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-i18next": "^17.0.8"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
