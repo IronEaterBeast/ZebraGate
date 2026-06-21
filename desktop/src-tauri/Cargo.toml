@@ -29,6 +29,7 @@ aes-gcm = "0.10"
 rand = "0.10.1"
 base64 = "0.22"
 flate2 = "1"
+rust-i18n = "4"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,38 @@
+# ZebraGate 桌面端 Rust 侧原生 UI 文案（前端 t() 接不到的部分：系统托盘菜单、
+# Tauri 窗口标题、退出确认对话框、本地服务启动期的原生提示）。
+# 与前端 react-i18next 分工：可由前端渲染的错误/状态一律交前端 t()，
+# 仅这些原生 UI 文案在此本地化。
+#
+# 采用 rust-i18n 的 _version: 2 格式：每个点号 key 下按语言列出文案。
+# 当前唯一语言 zh-CN；未来新增语言时在各 key 下追加对应语言项即可。
+_version: 2
+
+tray.open_window:
+  zh-CN: 打开窗口
+tray.hide_window:
+  zh-CN: 隐藏窗口
+tray.quit:
+  zh-CN: 退出
+
+quit_dialog.title:
+  zh-CN: 确认退出 ZebraGate
+quit_dialog.message:
+  zh-CN: 退出后，所有通过 ZebraGate Desktop 发起的访问请求都将失败，直到你重新打开软件。
+quit_dialog.confirm:
+  zh-CN: 退出
+quit_dialog.cancel:
+  zh-CN: 取消
+
+window.group_management_title:
+  zh-CN: 分组管理
+window.error_log_title:
+  zh-CN: 当前错误
+
+proxy.no_model_selected_warning:
+  zh-CN: 尚未选择 AI。本地服务可以启动，但客户端的请求会被本地拒绝，请选择至少一个 AI 选项。
+
+# model 列表拉取相关的用户提示（经 catalogError 流到前端直接展示）。
+catalog.unavailable_retrying:
+  zh-CN: 暂时无法获取 model 列表，正在自动重试…请检查网络连接。
+catalog.empty:
+  zh-CN: 服务器当前没有可用的 model，请确认账号已开通可用 model 后重试。

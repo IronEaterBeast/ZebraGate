@@ -4720,6 +4720,27 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Model Tag Settings": "模型标签设置",
+    "Tag models with \"Default\" (click a tag button to toggle; saved automatically). When the desktop client creates a group (including the auto-created default group on first launch), it automatically selects the models tagged \"Default\", lowering the barrier for first-time use.": "给 model 打上「默认」标签（点击标签按钮即切换，自动保存）。桌面客户端新建分组（含首次自动创建的 default 分组）时，会自动选中「默认」标签下的 model，降低用户首次试用的操作成本。",
+    "Search models…": "搜索 model…",
+    "No matching models": "没有匹配的 model",
+    "Click to remove \"{{label}}\"": "点击取消「{{label}}」",
+    "Click to set \"{{label}}\"": "点击设为「{{label}}」",
+    "The ZebraGate desktop client did not accept this sign-in.": "ZebraGate 桌面客户端未接受此次登录。",
+    "Failed to obtain access token.": "获取访问令牌失败。",
+    "Sign-in failed.": "登录失败。",
+    "Cannot continue": "无法继续",
+    "The callback address is missing. Please reopen this page from the ZebraGate desktop client.": "缺少回调地址，请从 ZebraGate 桌面客户端重新打开此页面。",
+    "Signed in successfully": "登录成功",
+    "The ZebraGate desktop client has signed in. You can close this window.": "ZebraGate 桌面客户端已完成登录，您可以关闭此窗口。",
+    "Close window": "关闭窗口",
+    "Sign in to the ZebraGate desktop client": "登录 ZebraGate 桌面客户端",
+    "Checking browser sign-in status...": "正在检查浏览器登录状态...",
+    "You are not signed in to ZebraGate in this browser. Please sign in first; after signing in you will be returned to this page automatically to finish authorizing the desktop client.": "您还没有在浏览器中登录 ZebraGate。请先登录，登录后将自动返回本页以完成桌面客户端授权。",
+    "Go to sign in": "去登录",
+    "Link the following account to the ZebraGate desktop client:": "将以下账号关联到 ZebraGate 桌面客户端：",
+    "Linking...": "正在关联...",
+    "Sign in to the desktop client": "登录到桌面客户端"
   }
 }

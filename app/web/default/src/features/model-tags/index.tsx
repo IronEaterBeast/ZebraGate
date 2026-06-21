@@ -18,18 +18,23 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { Input } from '@/components/ui/input'
 import { getModelTags, updateModelTags, type ModelTagMap } from './api'
 
 const MODEL_TAGS_QUERY_KEY = ['model-tags']
 
 // 可打的标签清单（与后端 setting 的标签键对齐）。当前仅 default，
 // 以后新增「推荐」等标签只需在此追加一项，每个 model 后会多出一个对应 chip。
-const TAGS: { key: string; label: string }[] = [{ key: 'default', label: '默认' }]
+// label 是 i18n key（英文源串），渲染时经 t() 翻译。
+const TAGS: { key: string; label: string }[] = [
+  { key: 'default', label: 'Default' },
+]
 
 export function ModelTags() {
+  const { t } = useTranslation()
   const { data, isLoading } = useQuery({
     queryKey: MODEL_TAGS_QUERY_KEY,
     queryFn: getModelTags,
@@ -96,12 +101,12 @@ export function ModelTags() {
     try {
       const res = await updateModelTags(next)
       if (!res.success) {
-        throw new Error(res.message || '保存失败')
+        throw new Error(res.message || t('Save failed'))
       }
     } catch (error) {
       // 失败回滚到改动前状态，并提示。
       setTagMap(previous)
-      toast.error(error instanceof Error ? error.message : '保存失败')
+      toast.error(error instanceof Error ? error.message : t('Save failed'))
     } finally {
       setSavingChips((s) => {
         const copy = new Set(s)
@@ -112,51 +117,63 @@ export function ModelTags() {
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className='space-y-4 p-4'>
       <div>
-        <h1 className="text-xl font-semibold">模型标签设置</h1>
-        <p className="text-sm text-muted-foreground">
-          给 model 打上「默认」标签（点击标签按钮即切换，自动保存）。桌面客户端新建分组
-          （含首次自动创建的 default 分组）时，会自动选中「默认」标签下的 model，降低用户首次试用的操作成本。
+        <h1 className='text-xl font-semibold'>{t('Model Tag Settings')}</h1>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Tag models with "Default" (click a tag button to toggle; saved automatically). When the desktop client creates a group (including the auto-created default group on first launch), it automatically selects the models tagged "Default", lowering the barrier for first-time use.'
+          )}
         </p>
       </div>
 
-      <div className="flex justify-end">
+      <div className='flex justify-end'>
         <Input
-          className="max-w-xs"
-          placeholder="搜索 model…"
+          className='max-w-xs'
+          placeholder={t('Search models…')}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
       </div>
 
-      <div className="rounded-xl border border-border">
+      <div className='border-border rounded-xl border'>
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">加载中...</div>
+          <div className='text-muted-foreground p-4 text-sm'>
+            {t('Loading...')}
+          </div>
         ) : filteredModels.length === 0 ? (
-          <div className="p-4 text-sm text-muted-foreground">
-            {availableModels.length === 0 ? '暂无可用 model' : '没有匹配的 model'}
+          <div className='text-muted-foreground p-4 text-sm'>
+            {availableModels.length === 0
+              ? t('No available models')
+              : t('No matching models')}
           </div>
         ) : (
-          <ul className="divide-y divide-border">
+          <ul className='divide-border divide-y'>
             {filteredModels.map((modelName) => (
               <li
                 key={modelName}
-                className="flex items-center justify-between gap-3 px-4 py-2"
+                className='flex items-center justify-between gap-3 px-4 py-2'
               >
-                <span className="text-sm">{modelName}</span>
-                <div className="flex items-center gap-2">
+                <span className='text-sm'>{modelName}</span>
+                <div className='flex items-center gap-2'>
                   {TAGS.map((tag) => {
                     const active = hasTag(tagMap, modelName, tag.key)
                     const saving = savingChips.has(`${modelName}::${tag.key}`)
+                    const tagLabel = t(tag.label)
                     return (
                       <button
                         key={tag.key}
-                        type="button"
+                        type='button'
                         disabled={saving}
                         onClick={() => void toggleTag(modelName, tag.key)}
                         aria-pressed={active}
-                        title={active ? `点击取消「${tag.label}」` : `点击设为「${tag.label}」`}
+                        title={
+                          active
+                            ? t('Click to remove "{{label}}"', {
+                                label: tagLabel,
+                              })
+                            : t('Click to set "{{label}}"', { label: tagLabel })
+                        }
                         className={cn(
                           'inline-flex h-7 items-center rounded-full px-3 text-xs font-medium transition-colors',
                           'disabled:opacity-60',
@@ -165,7 +182,7 @@ export function ModelTags() {
                             : 'bg-muted text-muted-foreground hover:bg-muted/80'
                         )}
                       >
-                        {tag.label}
+                        {tagLabel}
                       </button>
                     )
                   })}

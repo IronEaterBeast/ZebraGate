@@ -23,6 +23,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use rand::TryRng;
 use reqwest::Client;
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::image::Image;
@@ -37,6 +38,11 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::time::{interval, sleep, Duration};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
+
+// rust-i18n 仅本地化 Rust 侧「前端 t() 接不到」的原生 UI 文案（系统托盘菜单、
+// Tauri 窗口标题、退出确认对话框、本地服务启动期的原生提示）。可由前端渲染的
+// 错误/状态一律交前端 react-i18next。locale 文件在 ../locales/<lang>.yml。
+rust_i18n::i18n!("locales", fallback = "zh-CN");
 
 const DEFAULT_LOCAL_PROXY_PORT: u16 = 7788;
 const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
@@ -61,14 +67,9 @@ const MODEL_CATALOG_STALE_AFTER_SECS: i64 = 2 * 24 * 60 * 60;
 /// 解决「首次安装即拉取失败要等一个完整周期」的体验问题：失败后会在数秒内
 /// 自动重试，网络一恢复就能拿到列表；持续断网则间隔逐步拉长，避免空转打扰。
 const MODEL_CATALOG_BACKOFF_SCHEDULE_SECS: [u64; 5] = [5, 15, 30, 60, 300];
-/// 拉取失败、且本地无任何可用 model 时给用户的提示。此时用户完全无法使用，
-/// 必须明确告知正在重试，而非让其对着空界面干瞪眼。
-const MODEL_CATALOG_UNAVAILABLE_RETRYING_MESSAGE: &str =
-    "暂时无法获取 model 列表，正在自动重试…请检查网络连接。";
-/// 拉取成功但服务器返回空列表时给用户的提示。这是服务器的权威结果（该账号当前
-/// 确无可用 model），不是网络问题，需如实告知而非静默。
-const MODEL_CATALOG_EMPTY_MESSAGE: &str =
-    "服务器当前没有可用的 model，请确认账号已开通可用 model 后重试。";
+// 「拉取失败本地无 model（正在重试）」「服务器返回空列表」两类用户提示文案，
+// 经 catalogError 流到前端直接展示，故走 rust-i18n（见 locales/，key:
+// catalog.unavailable_retrying / catalog.empty）。
 const AUTH_SESSION_FILENAME: &str = "auth-session.bin";
 const AUTH_KEY_FILENAME: &str = "auth-key.bin";
 const NO_MODEL_SELECTED_USER_MESSAGE: &str =
@@ -107,11 +108,6 @@ const WINDOW_GEOMETRY_MARGIN: i32 = 20;
 const MAIN_WINDOW_MIN_CONTENT_HEIGHT_LOGICAL: f64 = 205.0;
 const TRAY_MENU_TOGGLE_ID: &str = "toggle_main_window";
 const TRAY_MENU_QUIT_ID: &str = "quit";
-const TRAY_MENU_OPEN_WINDOW_TEXT: &str = "打开窗口";
-const TRAY_MENU_HIDE_WINDOW_TEXT: &str = "隐藏窗口";
-const TRAY_QUIT_CONFIRMATION_TITLE: &str = "确认退出 ZebraGate";
-const TRAY_QUIT_CONFIRMATION_MESSAGE: &str =
-    "退出后，所有通过 ZebraGate Desktop 发起的访问请求都将失败，直到你重新打开软件。";
 
 /// Computes the desktop window's default size and bottom-right position based on the
 /// primary monitor's work area (the screen area excluding the taskbar):
@@ -216,7 +212,13 @@ fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT_ID, "退出", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(
+        app,
+        TRAY_MENU_QUIT_ID,
+        t!("tray.quit"),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
 
@@ -252,11 +254,11 @@ fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn tray_toggle_menu_text(is_visible: bool) -> &'static str {
+fn tray_toggle_menu_text(is_visible: bool) -> String {
     if is_visible {
-        TRAY_MENU_HIDE_WINDOW_TEXT
+        t!("tray.hide_window").to_string()
     } else {
-        TRAY_MENU_OPEN_WINDOW_TEXT
+        t!("tray.open_window").to_string()
     }
 }
 
@@ -313,12 +315,12 @@ fn confirm_and_quit_app(app_handle: &AppHandle) {
     let app_handle = app_handle.clone();
     let mut dialog = app_handle
         .dialog()
-        .message(TRAY_QUIT_CONFIRMATION_MESSAGE)
-        .title(TRAY_QUIT_CONFIRMATION_TITLE)
+        .message(t!("quit_dialog.message"))
+        .title(t!("quit_dialog.title"))
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "退出".into(),
-            "取消".into(),
+            t!("quit_dialog.confirm").into_owned(),
+            t!("quit_dialog.cancel").into_owned(),
         ));
 
     if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -672,13 +674,42 @@ impl PersistedDesktopConfig {
 
 const DEFAULT_GROUP_NAME: &str = "default";
 
+/// 本地代理最近一次状态的稳定结构化码。序列化为 SCREAMING_SNAKE_CASE 字符串
+/// （如 `FAILED_TO_START`），供前端按码用 react-i18next 渲染文案、并据此判断
+/// 是否为「启动/停止失败」等需展示给用户的状态。Rust 自身控制流也按枚举比较，
+/// 不再依赖文案字符串匹配。面向用户的明细（端口、报错原因等）走 `last_error_message`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ProxyRequestStatus {
+    /// 尚未启动/已闲置。
+    Idle,
+    /// 正在启动（地址见 `address` 字段）。
+    Starting,
+    /// 已启动且健康检查通过。
+    Started,
+    /// 正在停止。
+    Stopping,
+    /// 已正常停止。
+    Stopped,
+    /// 启动失败（健康检查未通过；原因见 `last_error_message`）。
+    FailedToStart,
+    /// 运行中异常退出（原因见 `last_error_message`）。
+    StoppedWithError,
+    /// 停止校验超时（原因见 `last_error_message`）。
+    StopVerificationTimedOut,
+    /// 一次转发请求成功。
+    RequestSucceeded,
+    /// 一次转发请求失败（原因见 `last_error_message`）。
+    RequestFailed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalProxyStatusSnapshot {
     running: bool,
     port: Option<u16>,
     address: String,
-    last_request_status: String,
+    last_request_status: ProxyRequestStatus,
     last_error_message: Option<String>,
 }
 
@@ -876,6 +907,10 @@ pub fn run() {
     // Initialize the startup clock as early as possible.
     log_startup_elapsed("run() entered");
 
+    // 设定 Rust 侧原生 UI 文案的语言（当前唯一语言 zh-CN，与前端一致）。
+    // 未来支持多语言时，这里按用户/系统语言设定即可。
+    rust_i18n::set_locale("zh-CN");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -903,7 +938,7 @@ pub fn run() {
                 running: false,
                 port: config.last_port,
                 address: build_local_address(config.last_port.unwrap_or(DEFAULT_LOCAL_PROXY_PORT)),
-                last_request_status: "Local proxy is idle.".to_string(),
+                last_request_status: ProxyRequestStatus::Idle,
                 last_error_message: None,
             };
 
@@ -1097,10 +1132,7 @@ async fn start_local_proxy(
             .iter()
             .all(|group| group.selected_models.is_empty())
         {
-            Some(
-        "尚未选择 AI。本地服务可以启动，但客户端的请求会被本地拒绝，请选择至少一个 AI 选项。"
-          .to_string(),
-      )
+            Some(t!("proxy.no_model_selected_warning").into_owned())
         } else {
             None
         };
@@ -1109,7 +1141,7 @@ async fn start_local_proxy(
             running: false,
             port: Some(bound_port),
             address: address.clone(),
-            last_request_status: format!("Starting local proxy on {address}..."),
+            last_request_status: ProxyRequestStatus::Starting,
             last_error_message: selected_ai_warning.clone(),
         };
         runtime.shutdown_tx = Some(shutdown_tx);
@@ -1140,15 +1172,10 @@ async fn start_local_proxy(
         runtime.shutdown_tx = None;
 
         if let Err(error) = server_result {
-            runtime.proxy_status.last_request_status =
-                "Local proxy stopped with an error.".to_string();
+            runtime.proxy_status.last_request_status = ProxyRequestStatus::StoppedWithError;
             runtime.proxy_status.last_error_message = Some(error.to_string());
-        } else if runtime
-            .proxy_status
-            .last_request_status
-            .starts_with("Local proxy started on")
-        {
-            runtime.proxy_status.last_request_status = "Local proxy stopped.".to_string();
+        } else if runtime.proxy_status.last_request_status == ProxyRequestStatus::Started {
+            runtime.proxy_status.last_request_status = ProxyRequestStatus::Stopped;
         }
     });
 
@@ -1156,8 +1183,7 @@ async fn start_local_proxy(
         Ok(()) => {
             let mut runtime = state.inner.lock().await;
             runtime.proxy_status.running = true;
-            runtime.proxy_status.last_request_status =
-                format!("Local proxy started on {address}. Health check passed.");
+            runtime.proxy_status.last_request_status = ProxyRequestStatus::Started;
             runtime.proxy_status.last_error_message = startup_warning;
             Ok(runtime.proxy_status.clone())
         }
@@ -1165,8 +1191,7 @@ async fn start_local_proxy(
             let shutdown_tx = {
                 let mut runtime = state.inner.lock().await;
                 runtime.proxy_status.running = false;
-                runtime.proxy_status.last_request_status =
-                    "Local proxy failed to start.".to_string();
+                runtime.proxy_status.last_request_status = ProxyRequestStatus::FailedToStart;
                 runtime.proxy_status.last_error_message = Some(error.clone());
                 runtime.shutdown_tx.take()
             };
@@ -1187,7 +1212,7 @@ async fn stop_local_proxy(
     let shutdown_tx = {
         let mut runtime = state.inner.lock().await;
         runtime.proxy_status.running = false;
-        runtime.proxy_status.last_request_status = "Stopping local proxy...".to_string();
+        runtime.proxy_status.last_request_status = ProxyRequestStatus::Stopping;
         runtime.shutdown_tx.take()
     };
 
@@ -1204,10 +1229,9 @@ async fn stop_local_proxy(
     let mut runtime = state.inner.lock().await;
     runtime.proxy_status.running = false;
     runtime.shutdown_tx = None;
-    runtime.proxy_status.last_request_status = "Local proxy stopped.".to_string();
+    runtime.proxy_status.last_request_status = ProxyRequestStatus::Stopped;
     if let Err(error) = stop_result {
-        runtime.proxy_status.last_request_status =
-            "Local proxy stop verification timed out.".to_string();
+        runtime.proxy_status.last_request_status = ProxyRequestStatus::StopVerificationTimedOut;
         runtime.proxy_status.last_error_message = Some(error);
     }
     Ok(runtime.proxy_status.clone())
@@ -1234,9 +1258,11 @@ async fn get_model_catalog(
 async fn refresh_model_catalog(
     state: TauriState<'_, DesktopSharedState>,
 ) -> Result<ModelCatalogSnapshot, String> {
+    // 返回稳定错误码而非文案：前端（GroupManagementWindow）按需用 t() 渲染
+    // 「刷新失败/未登录」文案，不直接展示这里的字符串。
     match try_refresh_model_catalog(state.inner()).await {
-        CatalogRefreshOutcome::Failed => Err("刷新失败，请稍后重试".to_string()),
-        CatalogRefreshOutcome::SkippedLoggedOut => Err("尚未登录，请登录后重试".to_string()),
+        CatalogRefreshOutcome::Failed => Err("REFRESH_FAILED".to_string()),
+        CatalogRefreshOutcome::SkippedLoggedOut => Err("NOT_LOGGED_IN".to_string()),
         CatalogRefreshOutcome::Refreshed { .. } => {
             Ok(build_model_catalog_snapshot(state.inner()).await)
         }
@@ -1466,7 +1492,7 @@ async fn open_group_management_window(
         GROUP_MANAGEMENT_WINDOW_LABEL,
         tauri::WebviewUrl::App(format!("index.html{hash}").into()),
     )
-    .title("分组管理")
+    .title(t!("window.group_management_title").to_string())
     .inner_size(
         GROUP_MANAGEMENT_WINDOW_WIDTH,
         GROUP_MANAGEMENT_WINDOW_HEIGHT,
@@ -1503,7 +1529,7 @@ async fn open_error_log_window(
         ERROR_LOG_WINDOW_LABEL,
         tauri::WebviewUrl::App(format!("index.html{hash}").into()),
     )
-    .title("当前错误")
+    .title(t!("window.error_log_title").to_string())
     .inner_size(ERROR_LOG_WINDOW_WIDTH, ERROR_LOG_WINDOW_HEIGHT)
     .resizable(true)
     .build()
@@ -1790,12 +1816,7 @@ async fn local_chat_completions_handler(
     let mut parsed_request = match parse_chat_completion_request(&body) {
         Ok(request) => request,
         Err(message) => {
-            record_proxy_error(
-                &state,
-                "Local request validation failed.",
-                Some(message.clone()),
-            )
-            .await;
+            record_proxy_error(&state, Some(message.clone())).await;
             return openai_error_response(StatusCode::BAD_REQUEST, &message, "BAD_REQUEST");
         }
     };
@@ -1816,7 +1837,6 @@ async fn local_chat_completions_handler(
             );
             record_proxy_error(
         &state,
-        "Blocked by local privacy protection.",
         Some("Sensitive content category detected. Please remove sensitive information and try again.".to_string()),
       )
       .await;
@@ -1858,7 +1878,7 @@ async fn local_chat_completions_handler(
   .await;
 
     if let Err(message) = ensure_user_logged_in_for_proxy(&state.inner).await {
-        record_proxy_error(&state, "User is not signed in.", Some(message.clone())).await;
+        record_proxy_error(&state, Some(message.clone())).await;
         return openai_error_response(StatusCode::UNAUTHORIZED, &message, "NOT_LOGGED_IN");
     }
 
@@ -1866,12 +1886,7 @@ async fn local_chat_completions_handler(
     {
         Ok(config) => config,
         Err(error) => {
-            record_proxy_error(
-                &state,
-                "Failed to load local AI option selection.",
-                Some(error.clone()),
-            )
-            .await;
+            record_proxy_error(&state, Some(error.clone())).await;
             return openai_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &error,
@@ -1886,7 +1901,7 @@ async fn local_chat_completions_handler(
         .unwrap_or_default();
 
     if let Err(message) = ensure_model_selection_for_proxy(&effective_selected_models) {
-        record_proxy_error(&state, "No model selected.", Some(message.clone())).await;
+        record_proxy_error(&state, Some(message.clone())).await;
         return openai_error_response(
             StatusCode::BAD_REQUEST,
             NO_MODEL_SELECTED_USER_MESSAGE,
@@ -1946,12 +1961,7 @@ async fn local_chat_completions_handler(
         Ok(response) => response,
         Err(error) => {
             eprintln!("ZebraGate Desktop could not reach ZebraGate API Server: {error}");
-            record_proxy_error(
-                &state,
-                "ZebraGate API 服务未连接，请确认 API 服务已启动。",
-                Some("ZebraGate API 服务未连接，请确认 API 服务已启动。".to_string()),
-            )
-            .await;
+            record_proxy_error(&state, Some(BAD_GATEWAY_USER_MESSAGE.to_string())).await;
             return openai_error_response(
                 StatusCode::BAD_GATEWAY,
                 BAD_GATEWAY_USER_MESSAGE,
@@ -2144,12 +2154,7 @@ async fn authorize_local_request(
                 {
                     let message = format!("Failed to persist group usage time: {error}");
                     drop(runtime);
-                    record_proxy_error(
-                        state,
-                        "Failed to persist group usage time.",
-                        Some(message.clone()),
-                    )
-                    .await;
+                    record_proxy_error(state, Some(message.clone())).await;
                     return Err(openai_error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         &message,
@@ -2166,12 +2171,7 @@ async fn authorize_local_request(
         return Ok(group_id);
     }
 
-    record_proxy_error(
-        state,
-        "Local proxy key rejected.",
-        Some("Invalid local proxy key.".to_string()),
-    )
-    .await;
+    record_proxy_error(state, Some("Invalid local proxy key.".to_string())).await;
     Err(openai_error_response(
         StatusCode::UNAUTHORIZED,
         "Invalid local proxy key.",
@@ -2197,12 +2197,11 @@ async fn build_proxy_response(
 
     if is_stream {
         if status.is_success() {
-            record_proxy_success(&state, "Remote stream request succeeded.").await;
+            record_proxy_success(&state).await;
         } else {
             record_proxy_error(
                 &state,
-                &format!("Remote request returned {}.", status.as_u16()),
-                None,
+                Some(format!("Remote request returned {}.", status.as_u16())),
             )
             .await;
         }
@@ -2259,12 +2258,7 @@ async fn build_proxy_response(
         Ok(bytes) => bytes,
         Err(error) => {
             eprintln!("ZebraGate Desktop failed to read ZebraGate API response body: {error}");
-            record_proxy_error(
-                &state,
-                "ZebraGate API 响应读取失败，请稍后重试。",
-                Some("ZebraGate API 响应读取失败，请稍后重试。".to_string()),
-            )
-            .await;
+            record_proxy_error(&state, Some(UPSTREAM_ERROR_USER_MESSAGE.to_string())).await;
             return openai_error_response(
                 StatusCode::BAD_GATEWAY,
                 UPSTREAM_ERROR_USER_MESSAGE,
@@ -2274,12 +2268,11 @@ async fn build_proxy_response(
     };
 
     if status.is_success() {
-        record_proxy_success(&state, "Remote request succeeded.").await;
+        record_proxy_success(&state).await;
     } else {
         record_proxy_error(
             &state,
-            &format!("Remote request returned {}.", status.as_u16()),
-            None,
+            Some(format!("Remote request returned {}.", status.as_u16())),
         )
         .await;
     }
@@ -2839,10 +2832,8 @@ fn derive_catalog_error(
         return None;
     }
     match last_refresh {
-        CatalogRefreshState::Failed => {
-            Some(MODEL_CATALOG_UNAVAILABLE_RETRYING_MESSAGE.to_string())
-        }
-        CatalogRefreshState::Empty => Some(MODEL_CATALOG_EMPTY_MESSAGE.to_string()),
+        CatalogRefreshState::Failed => Some(t!("catalog.unavailable_retrying").into_owned()),
+        CatalogRefreshState::Empty => Some(t!("catalog.empty").into_owned()),
         // 从未拉取过（含未登录）：交由前端「暂无可用 model，请联网后刷新」兜底，
         // 不在此处伪造错误。
         CatalogRefreshState::None => None,
@@ -3075,19 +3066,17 @@ async fn fetch_remote_credits_balance(
         .map_err(|error| format!("Failed to decode credits balance response: {error}"))
 }
 
-async fn record_proxy_success(state: &DesktopSharedState, status_message: &str) {
+async fn record_proxy_success(state: &DesktopSharedState) {
     let mut runtime = state.inner.lock().await;
-    runtime.proxy_status.last_request_status = status_message.to_string();
+    runtime.proxy_status.last_request_status = ProxyRequestStatus::RequestSucceeded;
     runtime.proxy_status.last_error_message = None;
 }
 
-async fn record_proxy_error(
-    state: &DesktopSharedState,
-    status_message: &str,
-    error_message: Option<String>,
-) {
+/// 记录一次转发请求失败。`error_message` 为面向用户的明细（前端直接展示），
+/// 状态码统一为 `RequestFailed`。
+async fn record_proxy_error(state: &DesktopSharedState, error_message: Option<String>) {
     let mut runtime = state.inner.lock().await;
-    runtime.proxy_status.last_request_status = status_message.to_string();
+    runtime.proxy_status.last_request_status = ProxyRequestStatus::RequestFailed;
     runtime.proxy_status.last_error_message = error_message;
 }
 
@@ -3962,8 +3951,14 @@ mod tests {
 
     #[test]
     fn tray_toggle_menu_text_matches_main_window_visibility() {
-        assert_eq!(tray_toggle_menu_text(false), TRAY_MENU_OPEN_WINDOW_TEXT);
-        assert_eq!(tray_toggle_menu_text(true), TRAY_MENU_HIDE_WINDOW_TEXT);
+        rust_i18n::set_locale("zh-CN");
+        // 托盘切换项文案随主窗口可见性变化，且取自 i18n（前端 t() 接不到的原生菜单）。
+        assert_eq!(tray_toggle_menu_text(false), t!("tray.open_window"));
+        assert_eq!(tray_toggle_menu_text(true), t!("tray.hide_window"));
+        assert_ne!(tray_toggle_menu_text(false), tray_toggle_menu_text(true));
+        // 取自中文语言包，确认翻译确实生效（而非回退为 key 本身）。
+        assert_eq!(tray_toggle_menu_text(false), "打开窗口");
+        assert_eq!(tray_toggle_menu_text(true), "隐藏窗口");
     }
 
     #[test]
@@ -3978,9 +3973,11 @@ mod tests {
 
     #[test]
     fn tray_quit_confirmation_copy_explains_proxy_impact() {
-        assert!(TRAY_QUIT_CONFIRMATION_TITLE.contains("退出"));
-        assert!(TRAY_QUIT_CONFIRMATION_MESSAGE.contains("访问请求"));
-        assert!(TRAY_QUIT_CONFIRMATION_MESSAGE.contains("重新打开软件"));
+        rust_i18n::set_locale("zh-CN");
+        // 退出确认文案取自 i18n，需说明退出会中断本地代理（访问请求会失败、重开才恢复）。
+        assert!(t!("quit_dialog.title").contains("退出"));
+        assert!(t!("quit_dialog.message").contains("访问请求"));
+        assert!(t!("quit_dialog.message").contains("重新打开软件"));
     }
 
     #[test]
@@ -4040,6 +4037,37 @@ mod tests {
     #[test]
     fn pick_random_model_returns_none_for_empty_selection() {
         assert!(pick_random_model(&[]).is_none());
+    }
+
+    #[test]
+    fn proxy_request_status_serializes_to_stable_codes() {
+        // 这些序列化码是与前端的契约：desktop 的 ProxyRequestStatus 联合类型按这些
+        // 字符串判断「启动/停止失败」等状态。改动任一码都会静默断裂前端判断，
+        // 因此在此锁定。新增枚举值时同步更新前端联合类型与本断言。
+        let cases = [
+            (ProxyRequestStatus::Idle, "\"IDLE\""),
+            (ProxyRequestStatus::Starting, "\"STARTING\""),
+            (ProxyRequestStatus::Started, "\"STARTED\""),
+            (ProxyRequestStatus::Stopping, "\"STOPPING\""),
+            (ProxyRequestStatus::Stopped, "\"STOPPED\""),
+            (ProxyRequestStatus::FailedToStart, "\"FAILED_TO_START\""),
+            (
+                ProxyRequestStatus::StoppedWithError,
+                "\"STOPPED_WITH_ERROR\"",
+            ),
+            (
+                ProxyRequestStatus::StopVerificationTimedOut,
+                "\"STOP_VERIFICATION_TIMED_OUT\"",
+            ),
+            (
+                ProxyRequestStatus::RequestSucceeded,
+                "\"REQUEST_SUCCEEDED\"",
+            ),
+            (ProxyRequestStatus::RequestFailed, "\"REQUEST_FAILED\""),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(serde_json::to_string(&status).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -4275,7 +4303,7 @@ mod tests {
                     running: false,
                     port: None,
                     address: build_local_address(7788),
-                    last_request_status: "Local proxy is idle.".to_string(),
+                    last_request_status: ProxyRequestStatus::Idle,
                     last_error_message: None,
                 },
                 shutdown_tx: None,
@@ -4683,14 +4711,16 @@ mod tests {
 
     #[test]
     fn derive_catalog_error_reports_only_when_local_empty_and_actionable() {
+        rust_i18n::set_locale("zh-CN");
         // 本地无数据时，仅在「失败（重试中）」或「成功但空」才报错；从未拉取过不报错。
+        // 报错文案取自 i18n（前端直接展示该字符串）。
         assert_eq!(
             derive_catalog_error(false, &CatalogRefreshState::Failed),
-            Some(MODEL_CATALOG_UNAVAILABLE_RETRYING_MESSAGE.to_string())
+            Some(t!("catalog.unavailable_retrying").into_owned())
         );
         assert_eq!(
             derive_catalog_error(false, &CatalogRefreshState::Empty),
-            Some(MODEL_CATALOG_EMPTY_MESSAGE.to_string())
+            Some(t!("catalog.empty").into_owned())
         );
         assert_eq!(derive_catalog_error(false, &CatalogRefreshState::None), None);
     }
@@ -5007,7 +5037,7 @@ mod tests {
                     running: false,
                     port: None,
                     address: build_local_address(7788),
-                    last_request_status: "Local proxy is idle.".to_string(),
+                    last_request_status: ProxyRequestStatus::Idle,
                     last_error_message: None,
                 },
                 shutdown_tx: None,
@@ -5133,7 +5163,7 @@ mod tests {
                     running: true,
                     port: Some(7788),
                     address: build_local_address(7788),
-                    last_request_status: "Local proxy started.".to_string(),
+                    last_request_status: ProxyRequestStatus::Started,
                     last_error_message: None,
                 },
                 shutdown_tx: None,
@@ -5176,9 +5206,10 @@ mod tests {
         assert_eq!(payload.error.message, NO_MODEL_SELECTED_USER_MESSAGE);
 
         let runtime = state.inner.lock().await;
+        // 一次失败的转发请求统一记 RequestFailed 状态码，明细落在 last_error_message。
         assert_eq!(
             runtime.proxy_status.last_request_status,
-            "No model selected."
+            ProxyRequestStatus::RequestFailed
         );
         assert!(runtime
             .proxy_status
@@ -5218,7 +5249,7 @@ mod tests {
                     running: true,
                     port: Some(7788),
                     address: build_local_address(7788),
-                    last_request_status: "Local proxy started.".to_string(),
+                    last_request_status: ProxyRequestStatus::Started,
                     last_error_message: None,
                 },
                 shutdown_tx: None,
@@ -5255,9 +5286,10 @@ mod tests {
         assert_eq!(payload.error.message, NOT_LOGGED_IN_USER_MESSAGE);
 
         let runtime = state.inner.lock().await;
+        // 失败的转发请求统一记 RequestFailed 状态码，明细落在 last_error_message。
         assert_eq!(
             runtime.proxy_status.last_request_status,
-            "User is not signed in."
+            ProxyRequestStatus::RequestFailed
         );
         assert!(runtime
             .proxy_status
@@ -5297,7 +5329,7 @@ mod tests {
                     running: false,
                     port: None,
                     address: build_local_address(7788),
-                    last_request_status: "Local proxy is idle.".to_string(),
+                    last_request_status: ProxyRequestStatus::Idle,
                     last_error_message: None,
                 },
                 shutdown_tx: None,
@@ -6045,7 +6077,7 @@ mod tests {
                     running: true,
                     port: None,
                     address: build_local_address(7788),
-                    last_request_status: "Local proxy started.".to_string(),
+                    last_request_status: ProxyRequestStatus::Started,
                     last_error_message: None,
                 },
                 shutdown_tx: None,

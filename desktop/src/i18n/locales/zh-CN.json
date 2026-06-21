@@ -71,5 +71,9 @@
   "errorLog": {
     "title": "当前错误",
     "empty": "当前没有错误。"
+  },
+  "proxyStatus": {
+    "FAILED_TO_START": "本地服务启动失败。",
+    "STOPPED_WITH_ERROR": "本地服务异常退出。"
   }
 }

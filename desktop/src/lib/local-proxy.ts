@@ -1,11 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ZEBRAGATE_MODEL } from "./zebragate-shared";
 
+// 本地代理最近一次状态的稳定结构化码，与 Rust ProxyRequestStatus 枚举的序列化值对齐。
+// 前端据此判断「启动/停止失败」等需展示给用户的状态，并按码用 i18n 渲染文案，
+// 不再依赖文案字符串匹配。面向用户的明细走 lastErrorMessage。
+export type ProxyRequestStatus =
+  | "IDLE"
+  | "STARTING"
+  | "STARTED"
+  | "STOPPING"
+  | "STOPPED"
+  | "FAILED_TO_START"
+  | "STOPPED_WITH_ERROR"
+  | "STOP_VERIFICATION_TIMED_OUT"
+  | "REQUEST_SUCCEEDED"
+  | "REQUEST_FAILED";
+
 export interface LocalProxyStatus {
   running: boolean;
   port: number | null;
   address: string;
-  lastRequestStatus: string;
+  lastRequestStatus: ProxyRequestStatus;
   lastErrorMessage: string | null;
 }
 

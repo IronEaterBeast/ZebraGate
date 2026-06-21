@@ -4720,6 +4720,27 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Model Tag Settings": "Model Tag Settings",
+    "Tag models with \"Default\" (click a tag button to toggle; saved automatically). When the desktop client creates a group (including the auto-created default group on first launch), it automatically selects the models tagged \"Default\", lowering the barrier for first-time use.": "Tag models with \"Default\" (click a tag button to toggle; saved automatically). When the desktop client creates a group (including the auto-created default group on first launch), it automatically selects the models tagged \"Default\", lowering the barrier for first-time use.",
+    "Search models…": "Search models…",
+    "No matching models": "No matching models",
+    "Click to remove \"{{label}}\"": "Click to remove \"{{label}}\"",
+    "Click to set \"{{label}}\"": "Click to set \"{{label}}\"",
+    "The ZebraGate desktop client did not accept this sign-in.": "The ZebraGate desktop client did not accept this sign-in.",
+    "Failed to obtain access token.": "Failed to obtain access token.",
+    "Sign-in failed.": "Sign-in failed.",
+    "Cannot continue": "Cannot continue",
+    "The callback address is missing. Please reopen this page from the ZebraGate desktop client.": "The callback address is missing. Please reopen this page from the ZebraGate desktop client.",
+    "Signed in successfully": "Signed in successfully",
+    "The ZebraGate desktop client has signed in. You can close this window.": "The ZebraGate desktop client has signed in. You can close this window.",
+    "Close window": "Close window",
+    "Sign in to the ZebraGate desktop client": "Sign in to the ZebraGate desktop client",
+    "Checking browser sign-in status...": "Checking browser sign-in status...",
+    "You are not signed in to ZebraGate in this browser. Please sign in first; after signing in you will be returned to this page automatically to finish authorizing the desktop client.": "You are not signed in to ZebraGate in this browser. Please sign in first; after signing in you will be returned to this page automatically to finish authorizing the desktop client.",
+    "Go to sign in": "Go to sign in",
+    "Link the following account to the ZebraGate desktop client:": "Link the following account to the ZebraGate desktop client:",
+    "Linking...": "Linking...",
+    "Sign in to the desktop client": "Sign in to the desktop client"
   }
 }

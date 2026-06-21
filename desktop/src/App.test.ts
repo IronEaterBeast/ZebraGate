@@ -8,7 +8,7 @@ function createRuntimeSnapshot(): DesktopRuntimeSnapshot {
       running: false,
       port: 7788,
       address: "http://127.0.0.1:7788",
-      lastRequestStatus: "Local proxy is idle.",
+      lastRequestStatus: "IDLE",
       lastErrorMessage: null
     },
     deviceId: "device-1",

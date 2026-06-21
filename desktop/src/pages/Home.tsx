@@ -252,10 +252,13 @@ export function buildCurrentStatusReport({
   }
 
   if (!runtimeSnapshot.proxyStatus.running) {
-    const failedToStart = runtimeSnapshot.proxyStatus.lastRequestStatus === "Local proxy failed to start.";
-    const stoppedWithError = runtimeSnapshot.proxyStatus.lastRequestStatus === "Local proxy stopped with an error.";
+    const status = runtimeSnapshot.proxyStatus.lastRequestStatus;
+    const failedToStart = status === "FAILED_TO_START";
+    const stoppedWithError = status === "STOPPED_WITH_ERROR";
     if (failedToStart || stoppedWithError) {
-      items.push(runtimeSnapshot.proxyStatus.lastErrorMessage ?? runtimeSnapshot.proxyStatus.lastRequestStatus);
+      items.push(
+        runtimeSnapshot.proxyStatus.lastErrorMessage ?? t(`proxyStatus.${status}`)
+      );
     }
   }
 

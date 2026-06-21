@@ -12,7 +12,7 @@ function createRuntimeSnapshot(): DesktopRuntimeSnapshot {
       running: false,
       port: 7788,
       address: "http://127.0.0.1:7788",
-      lastRequestStatus: "Local proxy is idle.",
+      lastRequestStatus: "IDLE",
       lastErrorMessage: null
     },
     deviceId: "device-1",
@@ -141,7 +141,7 @@ describe("HomePage", () => {
   it("reports current proxy startup failures", () => {
     const runtimeSnapshot = createRuntimeSnapshot();
     runtimeSnapshot.proxyStatus.running = false;
-    runtimeSnapshot.proxyStatus.lastRequestStatus = "Local proxy failed to start.";
+    runtimeSnapshot.proxyStatus.lastRequestStatus = "FAILED_TO_START";
     runtimeSnapshot.proxyStatus.lastErrorMessage = "Port is already in use.";
     runtimeSnapshot.groups[0].selectedModelCount = 1;
 
@@ -159,7 +159,7 @@ describe("HomePage", () => {
   it("does not report idle proxy state as a current issue", () => {
     const runtimeSnapshot = createRuntimeSnapshot();
     runtimeSnapshot.proxyStatus.running = false;
-    runtimeSnapshot.proxyStatus.lastRequestStatus = "Local proxy is idle.";
+    runtimeSnapshot.proxyStatus.lastRequestStatus = "IDLE";
     runtimeSnapshot.proxyStatus.lastErrorMessage = null;
     runtimeSnapshot.groups[0].selectedModelCount = 1;
 
@@ -225,7 +225,7 @@ describe("HomePage", () => {
   it("shows the current issue count in the status bar error button", () => {
     const runtimeSnapshot = createRuntimeSnapshot();
     runtimeSnapshot.proxyStatus.running = false;
-    runtimeSnapshot.proxyStatus.lastRequestStatus = "Local proxy failed to start.";
+    runtimeSnapshot.proxyStatus.lastRequestStatus = "FAILED_TO_START";
     runtimeSnapshot.proxyStatus.lastErrorMessage = "Port is already in use.";
     runtimeSnapshot.remoteApiErrorMessage = "connection refused";
     runtimeSnapshot.groups[0].selectedModelCount = 1;

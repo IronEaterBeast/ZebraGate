@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect, useState } from 'react'
 import { getRouteApi } from '@tanstack/react-router'
+import { useTranslation } from 'react-i18next'
 import { api, getSelf } from '@/lib/api'
 
 const routeApi = getRouteApi('/desktop-login')
@@ -56,6 +57,7 @@ interface SessionUser {
 }
 
 export function DesktopLogin() {
+  const { t } = useTranslation()
   const { callback: callbackUrl } = routeApi.useSearch()
 
   const [status, setStatus] = useState<Status>('checking')
@@ -116,7 +118,9 @@ export function DesktopLogin() {
       body: JSON.stringify(payload),
     })
     if (!response.ok) {
-      throw new Error('ZebraGate 桌面客户端未接受此次登录。')
+      throw new Error(
+        t('The ZebraGate desktop client did not accept this sign-in.')
+      )
     }
   }
 
@@ -136,7 +140,9 @@ export function DesktopLogin() {
       })
       const accessToken: string | undefined = tokenRes.data?.data
       if (!tokenRes.data?.success || !accessToken) {
-        throw new Error(tokenRes.data?.message || '获取访问令牌失败。')
+        throw new Error(
+          tokenRes.data?.message || t('Failed to obtain access token.')
+        )
       }
 
       // access token 无独立刷新令牌，这里复用同一 token 作为 refreshToken；
@@ -150,7 +156,7 @@ export function DesktopLogin() {
       })
       setStatus('linked')
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : '登录失败。')
+      setSubmitError(err instanceof Error ? err.message : t('Sign-in failed.'))
       setStatus('error')
     }
   }
@@ -164,8 +170,8 @@ export function DesktopLogin() {
   }
 
   const card = (children: React.ReactNode) => (
-    <main className="mx-auto mt-16 max-w-md px-4">
-      <div className="rounded-2xl border border-border bg-card p-6">
+    <main className='mx-auto mt-16 max-w-md px-4'>
+      <div className='border-border bg-card rounded-2xl border p-6'>
         {children}
       </div>
     </main>
@@ -174,9 +180,11 @@ export function DesktopLogin() {
   if (missingCallback) {
     return card(
       <>
-        <h1 className="text-xl font-semibold">无法继续</h1>
-        <p className="mt-2 text-sm text-destructive">
-          缺少回调地址，请从 ZebraGate 桌面客户端重新打开此页面。
+        <h1 className='text-xl font-semibold'>{t('Cannot continue')}</h1>
+        <p className='text-destructive mt-2 text-sm'>
+          {t(
+            'The callback address is missing. Please reopen this page from the ZebraGate desktop client.'
+          )}
         </p>
       </>
     )
@@ -184,18 +192,22 @@ export function DesktopLogin() {
 
   if (status === 'linked') {
     return (
-      <main className="mx-auto mt-16 max-w-md px-4">
-        <div className="rounded-2xl border border-border bg-card p-6 text-center">
-          <h1 className="text-xl font-semibold">登录成功</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            ZebraGate 桌面客户端已完成登录，您可以关闭此窗口。
+      <main className='mx-auto mt-16 max-w-md px-4'>
+        <div className='border-border bg-card rounded-2xl border p-6 text-center'>
+          <h1 className='text-xl font-semibold'>
+            {t('Signed in successfully')}
+          </h1>
+          <p className='text-muted-foreground mt-2 text-sm'>
+            {t(
+              'The ZebraGate desktop client has signed in. You can close this window.'
+            )}
           </p>
           <button
-            className="mt-4 w-full rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-            type="button"
+            className='bg-primary text-primary-foreground mt-4 w-full rounded-full px-4 py-2 text-sm font-medium'
+            type='button'
             onClick={() => window.close()}
           >
-            关闭窗口
+            {t('Close window')}
           </button>
         </div>
       </main>
@@ -205,9 +217,11 @@ export function DesktopLogin() {
   if (status === 'checking') {
     return card(
       <>
-        <h1 className="text-xl font-semibold">登录 ZebraGate 桌面客户端</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          正在检查浏览器登录状态...
+        <h1 className='text-xl font-semibold'>
+          {t('Sign in to the ZebraGate desktop client')}
+        </h1>
+        <p className='text-muted-foreground mt-2 text-sm'>
+          {t('Checking browser sign-in status...')}
         </p>
       </>
     )
@@ -216,16 +230,20 @@ export function DesktopLogin() {
   if (status === 'need-web-login') {
     return card(
       <>
-        <h1 className="text-xl font-semibold">登录 ZebraGate 桌面客户端</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          您还没有在浏览器中登录 ZebraGate。请先登录，登录后将自动返回本页以完成桌面客户端授权。
+        <h1 className='text-xl font-semibold'>
+          {t('Sign in to the ZebraGate desktop client')}
+        </h1>
+        <p className='text-muted-foreground mt-2 text-sm'>
+          {t(
+            'You are not signed in to ZebraGate in this browser. Please sign in first; after signing in you will be returned to this page automatically to finish authorizing the desktop client.'
+          )}
         </p>
         <button
-          className="mt-4 w-full rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-          type="button"
+          className='bg-primary text-primary-foreground mt-4 w-full rounded-full px-4 py-2 text-sm font-medium'
+          type='button'
           onClick={goToWebLogin}
         >
-          去登录
+          {t('Go to sign in')}
         </button>
       </>
     )
@@ -237,28 +255,30 @@ export function DesktopLogin() {
 
   return card(
     <>
-      <h1 className="text-xl font-semibold">登录 ZebraGate 桌面客户端</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        将以下账号关联到 ZebraGate 桌面客户端：
+      <h1 className='text-xl font-semibold'>
+        {t('Sign in to the ZebraGate desktop client')}
+      </h1>
+      <p className='text-muted-foreground mt-2 text-sm'>
+        {t('Link the following account to the ZebraGate desktop client:')}
       </p>
-      <div className="mt-4 rounded-xl border border-border bg-background px-3 py-3">
-        <div className="text-sm font-medium">{displayName}</div>
+      <div className='border-border bg-background mt-4 rounded-xl border px-3 py-3'>
+        <div className='text-sm font-medium'>{displayName}</div>
         {user?.email ? (
-          <div className="mt-0.5 text-sm text-muted-foreground">
+          <div className='text-muted-foreground mt-0.5 text-sm'>
             {user.email}
           </div>
         ) : null}
       </div>
       {submitError ? (
-        <p className="mt-3 text-sm text-destructive">{submitError}</p>
+        <p className='text-destructive mt-3 text-sm'>{submitError}</p>
       ) : null}
       <button
-        className="mt-4 w-full rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-        type="button"
+        className='bg-primary text-primary-foreground mt-4 w-full rounded-full px-4 py-2 text-sm font-medium disabled:opacity-60'
+        type='button'
         disabled={authorizing}
         onClick={() => void handleAuthorize()}
       >
-        {authorizing ? '正在关联...' : '登录到桌面客户端'}
+        {authorizing ? t('Linking...') : t('Sign in to the desktop client')}
       </button>
     </>
   )
