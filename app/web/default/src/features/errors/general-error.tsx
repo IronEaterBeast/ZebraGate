@@ -19,9 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
+import { useStatus } from '@/hooks/use-status'
 import { Button } from '@/components/ui/button'
 
-const FEEDBACK_URL = 'https://github.com/QuantumNous/new-api/issues'
+// Fallback used only when the admin has not configured a docs/help link in
+// System Settings. The feedback button prefers the configured docs_link so
+// operators can point it at their own help center or issue tracker.
+const FEEDBACK_FALLBACK_URL = 'https://zebragate.com'
 
 type GeneralErrorProps = React.HTMLAttributes<HTMLDivElement> & {
   minimal?: boolean
@@ -44,6 +48,9 @@ export function GeneralError({
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { history } = useRouter()
+  const { status: systemStatus } = useStatus()
+  const feedbackUrl =
+    (systemStatus?.docs_link as string | undefined) || FEEDBACK_FALLBACK_URL
   const status = getHttpStatus(error)
   const isRateLimited = status === 429
   const title = isRateLimited
@@ -67,7 +74,7 @@ export function GeneralError({
         </p>
         {!minimal && (
           <p className='text-muted-foreground text-center text-sm'>
-            {t('If this keeps happening, please report it on GitHub Issues.')}
+            {t('If this keeps happening, please contact support.')}
           </p>
         )}
         {!minimal && (
@@ -79,7 +86,7 @@ export function GeneralError({
               variant='outline'
               render={
                 <a
-                  href={FEEDBACK_URL}
+                  href={feedbackUrl}
                   target='_blank'
                   rel='noopener noreferrer'
                 />

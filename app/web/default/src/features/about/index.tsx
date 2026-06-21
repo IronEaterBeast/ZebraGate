@@ -59,7 +59,7 @@ function EmptyAboutState() {
           <p>
             {t('New API Project Repository:')}{' '}
             <a
-              href='https://github.com/QuantumNous/new-api'
+              href='https://zebragate.com'
               target='_blank'
               rel='noopener noreferrer'
               className='text-primary hover:underline'
@@ -69,7 +69,7 @@ function EmptyAboutState() {
           </p>
           <p className='text-muted-foreground'>
             <a
-              href='https://github.com/QuantumNous/new-api'
+              href='https://zebragate.com'
               target='_blank'
               rel='noopener noreferrer'
               className='text-primary hover:underline'

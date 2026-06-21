@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Fragment, useMemo } from 'react'
+import { Fragment, useCallback, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
@@ -128,7 +128,7 @@ function ProjectAttribution(props: { currentYear: number; inline?: boolean }) {
     <span className='text-muted-foreground/45'>
       &copy; {props.currentYear}{' '}
       <a
-        href='https://github.com/QuantumNous/new-api'
+        href='https://zebragate.com'
         target='_blank'
         rel='noopener noreferrer'
         className='text-foreground/70 hover:text-foreground font-medium transition-colors'
@@ -156,11 +156,23 @@ export function Footer(props: FooterProps) {
     footerHtml,
     demoSiteEnabled,
   } = useSystemConfig()
+  const { status } = useStatus()
 
   const displayLogo = systemLogo || props.logo || '/logo.png'
-  const displayName = systemName || props.name || 'New API'
+  const displayName = systemName || props.name || 'ZebraGate'
   const isDemoSiteMode = Boolean(demoSiteEnabled)
   const currentYear = new Date().getFullYear()
+
+  // Documentation base URL: prefer the admin-configured docs_link so footer
+  // entries resolve to the operator's own docs site; fall back to the official
+  // site. Sub-paths are appended so each entry keeps a distinct destination.
+  const docsBase = (
+    (status?.docs_link as string | undefined) || 'https://zebragate.com'
+  ).replace(/\/$/, '')
+  const docsUrl = useCallback(
+    (path: string) => (path ? `${docsBase}${path}` : docsBase),
+    [docsBase]
+  )
 
   const fallbackColumns = useMemo<FooterColumnProps[]>(
     () => [
@@ -169,15 +181,15 @@ export function Footer(props: FooterProps) {
         links: [
           {
             text: t('footer.columns.about.links.aboutProject'),
-            href: 'https://docs.newapi.pro/wiki/project-introduction/',
+            href: docsUrl('/about'),
           },
           {
             text: t('footer.columns.about.links.contact'),
-            href: 'https://docs.newapi.pro/support/community-interaction/',
+            href: docsUrl('/contact'),
           },
           {
             text: t('footer.columns.about.links.features'),
-            href: 'https://docs.newapi.pro/wiki/features-introduction/',
+            href: docsUrl('/features'),
           },
         ],
       },
@@ -186,15 +198,15 @@ export function Footer(props: FooterProps) {
         links: [
           {
             text: t('footer.columns.docs.links.quickStart'),
-            href: 'https://docs.newapi.pro/getting-started/',
+            href: docsUrl('/getting-started'),
           },
           {
             text: t('footer.columns.docs.links.installation'),
-            href: 'https://docs.newapi.pro/installation/',
+            href: docsUrl('/installation'),
           },
           {
             text: t('footer.columns.docs.links.apiDocs'),
-            href: 'https://docs.newapi.pro/api/',
+            href: docsUrl('/api'),
           },
         ],
       },
@@ -216,7 +228,7 @@ export function Footer(props: FooterProps) {
         ],
       },
     ],
-    [t]
+    [t, docsUrl]
   )
 
   const displayColumns = props.columns ?? fallbackColumns
