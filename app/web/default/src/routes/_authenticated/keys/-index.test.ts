@@ -16,16 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { isRedirect } from '@tanstack/react-router'
+import { describe, expect, it } from 'bun:test'
+import { redirectRemovedKeysPage } from './index'
 
-export function redirectRemovedKeysPage(): never {
-  throw redirect({
-    to: '/dashboard/$section',
-    params: { section: 'overview' },
-    replace: true,
+describe('removed API Keys page', () => {
+  it('redirects direct visits to the overview page', () => {
+    try {
+      redirectRemovedKeysPage()
+    } catch (error) {
+      expect(isRedirect(error)).toBe(true)
+      if (!isRedirect(error)) return
+
+      expect(error.options).toMatchObject({
+        to: '/dashboard/$section',
+        params: { section: 'overview' },
+        replace: true,
+      })
+      return
+    }
+
+    throw new Error('Expected the removed route to redirect')
   })
-}
-
-export const Route = createFileRoute('/_authenticated/keys/')({
-  beforeLoad: redirectRemovedKeysPage,
 })

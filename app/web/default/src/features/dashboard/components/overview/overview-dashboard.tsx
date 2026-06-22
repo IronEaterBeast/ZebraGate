@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowRight,
@@ -26,37 +25,23 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
-  Copy,
   CreditCard,
   FileText,
-  KeyRound,
   ListChecks,
   RadioTower,
-  ShieldCheck,
   TerminalSquare,
-  Timer,
   type LucideIcon,
 } from 'lucide-react'
-import { motion, useReducedMotion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { getUserModels } from '@/lib/api'
-import { MOTION_TRANSITION } from '@/lib/motion'
 import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
-import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { Button } from '@/components/ui/button'
 import {
   CardStaggerContainer,
   CardStaggerItem,
 } from '@/components/page-transition'
-import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
-import type { ApiKey } from '@/features/keys/types'
-import {
-  useApiInfo,
-  useDashboardContentVisibility,
-} from '../../hooks/use-status-data'
+import { useDashboardContentVisibility } from '../../hooks/use-status-data'
 import { AnnouncementsPanel } from './announcements-panel'
 import { ApiInfoPanel } from './api-info-panel'
 import { FAQPanel } from './faq-panel'
@@ -79,7 +64,6 @@ const SETUP_GUIDE_CODE_PATTERN = [
 ].join('\n')
 
 type DashboardActionPath =
-  | '/keys'
   | '/wallet'
   | '/playground'
   | '/channels'
@@ -102,21 +86,6 @@ interface QuickAction {
   adminOnly?: boolean
 }
 
-interface RequestExample {
-  endpoint: string
-  model: string
-  keyName: string
-  keyId?: number
-  displayKey: string
-  ready: boolean
-}
-
-interface HeroSignal {
-  label: string
-  value: string
-  icon: LucideIcon
-}
-
 function getSavedSetupGuideExpanded(): boolean | null {
   if (typeof window === 'undefined') return null
   const saved = window.localStorage.getItem(SETUP_GUIDE_VISIBILITY_STORAGE_KEY)
@@ -131,49 +100,6 @@ function saveSetupGuideExpanded(expanded: boolean): void {
     SETUP_GUIDE_VISIBILITY_STORAGE_KEY,
     expanded ? 'expanded' : 'collapsed'
   )
-}
-
-function getCurrentOrigin(): string {
-  if (typeof window === 'undefined') return ''
-  return window.location.origin
-}
-
-function normalizeEndpoint(sourceUrl?: string): string {
-  const fallback = `${getCurrentOrigin()}/v1/chat/completions`
-  const trimmed = sourceUrl?.trim()
-  if (!trimmed) return fallback
-
-  const withoutTrailingSlash = trimmed.replace(/\/+$/, '')
-  if (withoutTrailingSlash.endsWith('/v1/chat/completions')) {
-    return withoutTrailingSlash
-  }
-  if (withoutTrailingSlash.endsWith('/v1')) {
-    return `${withoutTrailingSlash}/chat/completions`
-  }
-  return `${withoutTrailingSlash}/v1/chat/completions`
-}
-
-function getPreferredKey(keys: ApiKey[]): ApiKey | null {
-  return keys.find((item) => item.status === 1) ?? keys[0] ?? null
-}
-
-function formatDisplayKey(key?: string): string {
-  if (!key) return 'sk-...'
-  if (key.length <= 14) return key
-  return `${key.slice(0, 7)}...${key.slice(-4)}`
-}
-
-function buildCurlCommand(args: {
-  endpoint: string
-  apiKey: string
-  model: string
-}): string {
-  return [
-    `curl ${args.endpoint} \\`,
-    '  -H "Content-Type: application/json" \\',
-    `  -H "Authorization: Bearer ${args.apiKey}" \\`,
-    `  -d '{"model":"${args.model}","messages":[{"role":"user","content":"Say hello in one sentence."}]}'`,
-  ].join('\n')
 }
 
 function SetupGuideBackdrop(props: { compact?: boolean }) {
@@ -271,147 +197,6 @@ function StartStepItem(props: {
   )
 }
 
-function RequestPreview(props: {
-  example: RequestExample
-  signals: HeroSignal[]
-}) {
-  const { t } = useTranslation()
-  const shouldReduceMotion = useReducedMotion()
-  const [isCopying, setIsCopying] = useState(false)
-  const { copyToClipboard } = useCopyToClipboard({ notify: false })
-  const previewCurl = buildCurlCommand({
-    endpoint: props.example.endpoint,
-    apiKey: props.example.displayKey,
-    model: props.example.model,
-  })
-  const previewLines = previewCurl.split('\n')
-  const handleCopyRequest = async () => {
-    if (!props.example.keyId || isCopying) return
-
-    setIsCopying(true)
-    try {
-      const result = await fetchTokenKey(props.example.keyId)
-      const key = result.success && result.data?.key ? result.data.key : ''
-      if (!key) {
-        toast.error(result.message || t('Failed to copy to clipboard'))
-        return
-      }
-
-      const realCurl = buildCurlCommand({
-        endpoint: props.example.endpoint,
-        apiKey: `sk-${key}`,
-        model: props.example.model,
-      })
-      const copied = await copyToClipboard(realCurl)
-      if (copied) {
-        toast.success(t('Copied to clipboard'))
-      } else {
-        toast.error(t('Failed to copy to clipboard'))
-      }
-    } finally {
-      setIsCopying(false)
-    }
-  }
-
-  return (
-    <motion.div
-      initial={shouldReduceMotion ? false : { opacity: 0, y: 10, scale: 0.98 }}
-      animate={shouldReduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
-      transition={MOTION_TRANSITION.slow}
-      className='bg-background/75 relative overflow-hidden rounded-2xl border p-3 shadow-sm backdrop-blur'
-    >
-      {!shouldReduceMotion && (
-        <motion.div
-          className='via-foreground/30 pointer-events-none absolute inset-x-0 top-0 h-px bg-linear-to-r from-transparent to-transparent'
-          animate={{ x: ['-100%', '100%'] }}
-          transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
-          aria-hidden='true'
-        />
-      )}
-
-      <div className='flex items-center justify-between gap-3 border-b pb-3'>
-        <div className='flex min-w-0 items-center gap-2'>
-          <span className='bg-muted flex size-8 shrink-0 items-center justify-center rounded-lg'>
-            <TerminalSquare className='size-4' aria-hidden='true' />
-          </span>
-          <div className='min-w-0'>
-            <div className='truncate text-sm font-medium'>
-              {t('First API request')}
-            </div>
-            <div className='text-muted-foreground truncate text-xs'>
-              {props.example.ready
-                ? props.example.keyName
-                : t('Create an API key to unlock the real request')}
-            </div>
-          </div>
-        </div>
-        {props.example.ready ? (
-          <Button
-            variant='outline'
-            size='sm'
-            className='h-7 gap-1.5 px-2 text-xs'
-            disabled={isCopying}
-            onClick={handleCopyRequest}
-            aria-label={t('Copy ready-to-run curl')}
-          >
-            <Copy data-icon='inline-start' />
-            {isCopying ? t('Loading') : t('Copy')}
-          </Button>
-        ) : (
-          <Button size='sm' variant='outline' render={<Link to='/keys' />}>
-            {t('Create API Key')}
-          </Button>
-        )}
-      </div>
-
-      <div className='bg-foreground/[0.035] my-3 rounded-xl p-3 font-mono text-xs'>
-        <div className='mb-2 flex items-center gap-1.5'>
-          <span className='bg-destructive size-2 rounded-full' />
-          <span className='bg-warning size-2 rounded-full' />
-          <span className='bg-success size-2 rounded-full' />
-        </div>
-        <div className='flex flex-col gap-1 overflow-hidden'>
-          {previewLines.map((line, index) => (
-            <code
-              key={`${line}-${index}`}
-              className='text-muted-foreground truncate'
-              title={line}
-            >
-              {line}
-            </code>
-          ))}
-        </div>
-      </div>
-
-      <div className='grid gap-2'>
-        {props.signals.map((signal) => {
-          const Icon = signal.icon
-
-          return (
-            <div
-              key={signal.label}
-              className='bg-muted/40 flex items-center justify-between gap-3 rounded-xl px-3 py-2'
-            >
-              <span className='flex min-w-0 items-center gap-2'>
-                <Icon
-                  className='text-muted-foreground size-3.5 shrink-0'
-                  aria-hidden='true'
-                />
-                <span className='truncate text-xs font-medium'>
-                  {signal.label}
-                </span>
-              </span>
-              <span className='text-muted-foreground shrink-0 text-xs'>
-                {signal.value}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </motion.div>
-  )
-}
-
 function QuickActionItem(props: { action: QuickAction }) {
   const Icon = props.action.icon
 
@@ -455,7 +240,6 @@ function CompactQuickAction(props: { action: QuickAction }) {
 export function OverviewDashboard() {
   const { t } = useTranslation()
   const user = useAuthStore((state) => state.auth.user)
-  const { items: apiInfoItems } = useApiInfo()
   const {
     apiInfo: showApiInfoPanel,
     announcements: showAnnouncementsPanel,
@@ -471,38 +255,8 @@ export function OverviewDashboard() {
   const usedQuota = Number(user?.used_quota ?? 0)
   const isAdmin = Boolean(user?.role && user.role >= ROLE.ADMIN)
 
-  const apiKeysQuery = useQuery({
-    queryKey: ['dashboard', 'overview', 'api-keys'],
-    queryFn: async () => {
-      const result = await getApiKeys({ p: 1, size: 10 })
-      return result.success ? (result.data?.items ?? []) : []
-    },
-    staleTime: 60 * 1000,
-  })
-
-  const modelsQuery = useQuery({
-    queryKey: ['dashboard', 'overview', 'user-models'],
-    queryFn: async () => {
-      const result = await getUserModels()
-      return result.success ? (result.data ?? []) : []
-    },
-    staleTime: 5 * 60 * 1000,
-  })
-
-  const preferredKey = useMemo(
-    () => getPreferredKey(apiKeysQuery.data ?? []),
-    [apiKeysQuery.data]
-  )
-
   const startSteps = useMemo<StartStep[]>(
     () => [
-      {
-        title: t('Create API Key'),
-        description: t('Create a key for your app or service'),
-        to: '/keys',
-        icon: KeyRound,
-        completed: Boolean(preferredKey),
-      },
       {
         title: t('Add credits'),
         description: t('Keep enough balance before production traffic'),
@@ -518,17 +272,11 @@ export function OverviewDashboard() {
         completed: requestCount > 0,
       },
     ],
-    [preferredKey, remainQuota, requestCount, t, usedQuota]
+    [remainQuota, requestCount, t, usedQuota]
   )
 
   const quickActions = useMemo<QuickAction[]>(
     () => [
-      {
-        title: t('API Keys'),
-        description: t('Create a key for your app or service'),
-        to: '/keys',
-        icon: KeyRound,
-      },
       {
         title: t('Channels'),
         description: t('Configure upstream providers and routing.'),
@@ -557,48 +305,9 @@ export function OverviewDashboard() {
     [isAdmin, quickActions]
   )
 
-  const heroSignals = useMemo<HeroSignal[]>(
-    () => [
-      {
-        label: t('Route active'),
-        value: apiInfoItems.length > 0 ? t('Online') : t('Current domain'),
-        icon: RadioTower,
-      },
-      {
-        label: t('Auth configured'),
-        value: preferredKey ? t('Secured') : t('Needs API key'),
-        icon: ShieldCheck,
-      },
-      {
-        label: t('Model selected'),
-        value: modelsQuery.data?.[0] ?? t('Loading'),
-        icon: Timer,
-      },
-    ],
-    [apiInfoItems.length, modelsQuery.data, preferredKey, t]
-  )
-
-  const requestExample = useMemo<RequestExample>(() => {
-    const endpoint = normalizeEndpoint(apiInfoItems[0]?.url)
-    const model = modelsQuery.data?.[0] ?? 'gpt-4o-mini'
-    const keyName = preferredKey?.name ?? t('No API key yet')
-    const ready = Boolean(preferredKey?.id && model)
-
-    return {
-      endpoint,
-      model,
-      keyName,
-      keyId: preferredKey?.id,
-      displayKey: preferredKey
-        ? formatDisplayKey(`sk-${preferredKey.key}`)
-        : 'sk-...',
-      ready,
-    }
-  }, [apiInfoItems, modelsQuery.data, preferredKey, t])
-
   const completedStepCount = startSteps.filter((step) => step.completed).length
   const setupComplete = completedStepCount === startSteps.length
-  const setupStatusReady = apiKeysQuery.isFetched && Boolean(user)
+  const setupStatusReady = Boolean(user)
   const setupGuideExpanded =
     manualSetupGuideExpanded ?? (setupStatusReady && !setupComplete)
   const showLeftContentPanels =
@@ -618,7 +327,7 @@ export function OverviewDashboard() {
           <CardStaggerItem className='bg-card h-full overflow-hidden rounded-2xl border shadow-xs'>
             <div className='relative h-full overflow-hidden p-4 sm:p-5'>
               <SetupGuideBackdrop />
-              <div className='relative grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]'>
+              <div className='relative'>
                 <div className='flex min-w-0 flex-col gap-5'>
                   <div className='flex flex-wrap items-start justify-between gap-3'>
                     <div className='flex max-w-2xl flex-col gap-1'>
@@ -629,11 +338,6 @@ export function OverviewDashboard() {
                       <h3 className='text-xl font-semibold tracking-tight sm:text-2xl'>
                         {t('Build on your API gateway in minutes')}
                       </h3>
-                      <p className='text-muted-foreground max-w-xl text-sm leading-relaxed'>
-                        {t(
-                          'A focused home for keys, balance, routing, and service health.'
-                        )}
-                      </p>
                     </div>
                     <div className='flex flex-wrap items-center gap-2'>
                       <Button
@@ -643,10 +347,6 @@ export function OverviewDashboard() {
                       >
                         <ChevronUp data-icon='inline-start' />
                         {t('Hide setup guide')}
-                      </Button>
-                      <Button size='sm' render={<Link to='/keys' />}>
-                        <KeyRound data-icon='inline-start' />
-                        {t('Create API Key')}
                       </Button>
                     </div>
                   </div>
@@ -662,11 +362,6 @@ export function OverviewDashboard() {
                     ))}
                   </ol>
                 </div>
-
-                <RequestPreview
-                  example={requestExample}
-                  signals={heroSignals}
-                />
               </div>
             </div>
           </CardStaggerItem>

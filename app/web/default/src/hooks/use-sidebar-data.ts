@@ -22,7 +22,6 @@ import {
   CreditCard,
   FileText,
   FlaskConical,
-  Key,
   LayoutDashboard,
   ListTodo,
   MessageSquare,
@@ -77,11 +76,6 @@ export function useSidebarData(): SidebarData {
             title: t('Dashboard'),
             url: '/dashboard/models',
             icon: LayoutDashboard,
-          },
-          {
-            title: t('API Keys'),
-            url: '/keys',
-            icon: Key,
           },
           {
             title: t('Usage Logs'),
