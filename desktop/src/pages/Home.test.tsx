@@ -56,10 +56,62 @@ describe("HomePage", () => {
     );
 
     expect(html).toContain("signin-prompt");
-    expect(html).toContain("Sign In");
-    expect(html).not.toContain("Sign Out");
-    expect(html).not.toContain("Base URL");
+    expect(html).toContain("登录");
+    expect(html).not.toContain("退出登录");
+    expect(html).not.toContain("服务地址");
     expect(html).not.toContain("管理分组");
+  });
+
+  it("formats the app version label shown on the sign-in screen", () => {
+    // 版本号在登录页通过 getVersion() 异步注入，渲染不到字符串本身，
+    // 这里直接锁定面向用户的 i18n 文案格式，避免后续改键名/格式时悄悄破坏。
+    expect(t("home.version", { version: "1.0.0" })).toBe("版本 1.0.0");
+  });
+
+  it("exposes a check-for-updates entry on both the sign-in and signed-in screens", () => {
+    const runtimeSnapshot = createRuntimeSnapshot();
+
+    const signedOutHtml = renderToStaticMarkup(
+      <HomePage
+        authStatus={{ loggedIn: false, email: null, userId: null }}
+        error={null}
+        isBusy={false}
+        onLogin={async () => undefined}
+        onLogout={async () => undefined}
+        onOpenGroupManagement={() => undefined}
+        onRefresh={async () => undefined}
+        onSwitchGroup={() => undefined}
+        runtimeSnapshot={runtimeSnapshot}
+        selectedAiCount={0}
+        viewedGroup={createViewedGroup(runtimeSnapshot)}
+      />
+    );
+    expect(signedOutHtml).toContain("signin-update-button");
+    expect(signedOutHtml).toContain(t("home.checkForUpdates"));
+
+    const signedInHtml = renderToStaticMarkup(
+      <HomePage
+        authStatus={{ loggedIn: true, email: "user@example.com", userId: "user-1" }}
+        error={null}
+        isBusy={false}
+        onLogin={async () => undefined}
+        onLogout={async () => undefined}
+        onOpenGroupManagement={() => undefined}
+        onRefresh={async () => undefined}
+        onSwitchGroup={() => undefined}
+        runtimeSnapshot={runtimeSnapshot}
+        selectedAiCount={0}
+        viewedGroup={createViewedGroup(runtimeSnapshot)}
+      />
+    );
+    expect(signedInHtml).toContain("status-update-button");
+    expect(signedInHtml).toContain(t("home.checkForUpdates"));
+  });
+
+  it("keeps the check-for-updates user-facing strings localized", () => {
+    expect(t("home.checkForUpdates")).toBe("检查更新");
+    expect(t("home.upToDate")).toBe("已是最新版本");
+    expect(t("home.updateCheckFailed")).toBe("检查更新失败");
   });
 
   it("does not render developer-only config fields for normal users", () => {
@@ -85,7 +137,7 @@ describe("HomePage", () => {
     expect(html).not.toContain("Save Developer Config");
     expect(html).not.toContain("Device ID");
     expect(html).not.toContain("Daily Check-in");
-    expect(html).toContain("Base URL");
+    expect(html).toContain("服务地址");
     expect(html).toContain("http://127.0.0.1:7788/v1");
     expect(html).toContain("最后使用");
     expect(html).toContain("从未使用");
@@ -216,7 +268,7 @@ describe("HomePage", () => {
       />
     );
 
-    expect(html).toContain("ERROR 1");
+    expect(html).toContain("错误 1");
     expect(html).toContain("status-error-button");
     expect(html).not.toContain("error-banner-stack");
     expect(html).not.toContain("无法连接 ZebraGate API");
@@ -245,6 +297,6 @@ describe("HomePage", () => {
       />
     );
 
-    expect(html).toContain("ERROR 2");
+    expect(html).toContain("错误 2");
   });
 });

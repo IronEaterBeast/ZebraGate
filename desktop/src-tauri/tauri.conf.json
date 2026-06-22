@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ZebraGate",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "dev.zebragate.app",
   "build": {
     "beforeDevCommand": "pnpm run dev:webview",
@@ -34,6 +34,17 @@
     ],
     "windows": {
       "digestAlgorithm": "sha256"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://app.example.com/desktop/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNDRkFCNDlEREE2QjY2QUQKUldTdFptdmFuYlQ2UEI4SjhmVU5CR0toTzMvY3hHSUJIYmVHYktGdDQ5Y3RyUmMyeTJlT2VrcGYK",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

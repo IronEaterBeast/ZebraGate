@@ -1,4 +1,5 @@
 export {
+  checkForUpdates,
   clearUnavailableModelNotices,
   createGroup,
   deleteGroup,
@@ -20,6 +21,7 @@ export {
   renameGroup,
   resizeMainWindowToContent,
   saveModelSelection,
+  setPrivacyProtectionEnabled,
   showMainWindowWhenReady,
   startLocalProxy,
   stopLocalProxy,
@@ -31,5 +33,6 @@ export {
   type DesktopGroupSummary,
   type DesktopRuntimeSnapshot,
   type LocalProxyStatus,
-  type UnavailableModelNotice
+  type UnavailableModelNotice,
+  type UpdateCheckResult
 } from "./local-proxy";

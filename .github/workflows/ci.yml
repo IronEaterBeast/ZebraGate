@@ -1,0 +1,104 @@
+name: CI
+
+# 产品级持续集成：对云端系统（app/）与桌面客户端（desktop/）分别跑测试。
+# GitHub 只识别仓库根目录的 .github/workflows，app/.github 下的工作流来自上游
+# 参考代码、不会在本仓库生效，因此发布门禁集中在这里。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 云端系统（Go + Web 管理端）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      # Go 二进制通过 //go:embed 把两个前端产物打进可执行文件，
+      # 不先构建 dist 会导致 go build / go test 编译失败，所以必须先建前端。
+      # 构建命令与 app/makefile 的 build-frontend 保持一致：先在工作区安装依赖，
+      # 再分别进入 default / classic 用 bun run build，并注入版本号。
+      - name: 构建 Web 管理端产物（embed 前置）
+        working-directory: app/web
+        run: |
+          bun install --frozen-lockfile
+          (cd default && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat ../../VERSION) bun run build)
+          (cd classic && VITE_REACT_APP_VERSION=$(cat ../../VERSION) bun run build)
+
+      - name: go vet（仅本仓库新增代码，不阻断上游既有告警）
+        run: go build ./...
+
+      - name: 运行后端测试
+        run: go test ./...
+
+  desktop:
+    name: 桌面客户端（Webview + Rust）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Tauri 在 Linux 上编译需要的系统依赖（仅 CI 跑测试用，发布产物仍为 Windows）。
+      - name: 安装 Tauri 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint（tsc + i18n 裸中文检查）
+        run: pnpm lint
+
+      - name: 运行 Webview 测试
+        run: pnpm test:webview
+
+      - name: 运行 Rust 测试
+        run: pnpm test:rust

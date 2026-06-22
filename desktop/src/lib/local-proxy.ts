@@ -85,6 +85,17 @@ export interface AuthStatusSnapshot {
   userId: string | null;
 }
 
+export interface UpdateCheckResult {
+  updateAvailable: boolean;
+  version: string | null;
+}
+
+// 触发「检查更新」：后端检查更新清单，若有新版本则弹原生确认框，确认后下载安装并重启。
+// 返回是否发现新版本，供 UI 区分「已是最新」与更新进行中。
+export async function checkForUpdates(): Promise<UpdateCheckResult> {
+  return invoke<UpdateCheckResult>("check_for_updates");
+}
+
 export async function startLocalProxy(
   preferredPort: number | null = null
 ): Promise<LocalProxyStatus> {
@@ -109,6 +120,12 @@ export async function getDesktopBootstrapSnapshot(): Promise<DesktopRuntimeSnaps
 
 export async function getDesktopConfig(): Promise<DesktopConfigSnapshot> {
   return invoke<DesktopConfigSnapshot>("get_desktop_config");
+}
+
+// 设置隐私保护开关，返回写入后的真实状态。隐私保护默认开启、会在本地拦截命中敏感
+// 关键词的请求，因此必须让用户可见、可控。
+export async function setPrivacyProtectionEnabled(enabled: boolean): Promise<boolean> {
+  return invoke<boolean>("set_privacy_protection_enabled", { enabled });
 }
 
 export async function getModelCatalog(): Promise<ModelCatalogSnapshot> {

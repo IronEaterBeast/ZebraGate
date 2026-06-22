@@ -11,8 +11,36 @@ tray.open_window:
   zh-CN: 打开窗口
 tray.hide_window:
   zh-CN: 隐藏窗口
+tray.autostart:
+  zh-CN: 开机自启
+tray.check_update:
+  zh-CN: 检查更新
 tray.quit:
   zh-CN: 退出
+
+# 开机自启切换失败时的原生提示（成功路径无对话框，仅在失败时告知用户原因）。
+autostart.toggle_failed_title:
+  zh-CN: 开机自启设置失败
+autostart.toggle_failed_message:
+  zh-CN: 无法修改开机自启设置：%{error}。请稍后重试，或检查系统权限设置。
+
+# 自动更新相关的原生对话框文案（检查更新由托盘菜单或前端触发，结果用原生对话框反馈）。
+update.title:
+  zh-CN: 检查更新
+update.available_title:
+  zh-CN: 发现新版本
+update.available_message:
+  zh-CN: 发现新版本 %{version}，是否立即更新？更新会下载并安装新版本，随后自动重启 ZebraGate。
+update.install_now:
+  zh-CN: 立即更新
+update.later:
+  zh-CN: 稍后
+update.up_to_date:
+  zh-CN: 当前已是最新版本。
+update.check_failed:
+  zh-CN: 检查更新失败：%{error}。请确认网络连接后重试。
+update.already_running:
+  zh-CN: 已有一个更新检查正在进行中，请稍候。
 
 quit_dialog.title:
   zh-CN: 确认退出 ZebraGate
@@ -30,6 +58,13 @@ window.error_log_title:
 
 proxy.no_model_selected_warning:
   zh-CN: 尚未选择 AI。本地服务可以启动，但客户端的请求会被本地拒绝，请选择至少一个 AI 选项。
+
+# 隐私保护拦截相关文案。blocked_message 作为 OpenAI 兼容错误体回给客户端软件、
+# 由发起请求的用户读到；blocked_status 经 record_proxy_error 流到桌面端错误面板。
+privacy.blocked_message:
+  zh-CN: ZebraGate 检测到本次请求可能包含敏感信息，已在本地拦截。请删除敏感内容后重试，或在 ZebraGate 设置中关闭隐私保护。
+privacy.blocked_status:
+  zh-CN: 检测到敏感内容，本次请求已被本地拦截。请删除敏感信息后重试。
 
 # model 列表拉取相关的用户提示（经 catalogError 流到前端直接展示）。
 catalog.unavailable_retrying:

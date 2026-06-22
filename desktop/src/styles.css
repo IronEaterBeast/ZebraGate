@@ -246,6 +246,28 @@ button {
   flex-shrink: 1;
 }
 
+.status-update-button {
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  background: transparent;
+  color: #4a4a4a;
+  font-size: 11px;
+  line-height: 1;
+  height: 22px;
+  padding: 0 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.status-update-button:hover:not(:disabled) {
+  background: #d4d4d4;
+}
+
+.status-update-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .status-spacer {
   flex: 1;
 }
@@ -281,6 +303,34 @@ button {
   border-bottom: 1px solid #f7d774;
 }
 
+.privacy-protection-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e6e6e6;
+}
+
+.privacy-protection-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.privacy-protection-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1b1b1b;
+}
+
+.privacy-protection-description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b6b6b;
+}
+
 .signin-prompt {
   display: flex;
   flex-direction: column;
@@ -295,6 +345,31 @@ button {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+.signin-version {
+  color: #8a8a8a;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.signin-update-button {
+  border: none;
+  background: transparent;
+  color: #5a7fb5;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 0;
+  cursor: pointer;
+}
+
+.signin-update-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.signin-update-button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .muted {

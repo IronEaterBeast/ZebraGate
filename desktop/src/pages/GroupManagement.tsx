@@ -83,6 +83,9 @@ export function GroupManagementPage({
   onSaveSelection,
   onSelectGroup,
   onClearUnavailableModelNotices,
+  privacyProtectionEnabled,
+  isTogglingPrivacyProtection,
+  onTogglePrivacyProtection,
   refreshFeedback,
   refreshFeedbackKind,
   selectedModels,
@@ -103,6 +106,9 @@ export function GroupManagementPage({
   onSaveSelection: (selectedModels: string[]) => Promise<void>;
   onSelectGroup: (groupId: string) => void;
   onClearUnavailableModelNotices: () => Promise<void>;
+  privacyProtectionEnabled: boolean;
+  isTogglingPrivacyProtection: boolean;
+  onTogglePrivacyProtection: (nextEnabled: boolean) => Promise<void>;
   refreshFeedback: string | null;
   refreshFeedbackKind: "success" | "error";
   selectedModels: string[];
@@ -257,6 +263,19 @@ export function GroupManagementPage({
       <header className="title-bar">
         <span className="account-name">{t("group.title")}</span>
       </header>
+
+      <div className="privacy-protection-row">
+        <label className="privacy-protection-toggle">
+          <input
+            checked={privacyProtectionEnabled}
+            disabled={isTogglingPrivacyProtection}
+            onChange={(event) => void onTogglePrivacyProtection(event.target.checked)}
+            type="checkbox"
+          />
+          <span className="privacy-protection-label">{t("privacy.toggleLabel")}</span>
+        </label>
+        <p className="privacy-protection-description">{t("privacy.toggleDescription")}</p>
+      </div>
 
       {error ? <div className="error-banner">{error}</div> : null}
       {catalogError ? <div className="error-banner">{catalogError}</div> : null}

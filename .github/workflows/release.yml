@@ -1,0 +1,202 @@
+name: Release
+
+# 打 v* 标签时产出可分发产物：
+#   - 云端系统：内嵌前端的单文件后端二进制（Linux / Windows）
+#   - 桌面客户端：Windows Tauri 安装包
+# 产物上传到对应的 GitHub Release。桌面端需要构建期固化的远端地址，
+# 通过仓库 Secrets 注入（缺省回退到占位地址，仅保证流程不中断）。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # 标签触发时校验四处版本一致，避免「打了 v1.1.0 标签但忘改某处版本号」
+  # 导致云端二进制版本号错误、桌面 latest.json 版本与实际不符、自动更新比对异常。
+  # 四处：app/VERSION、desktop/package.json、desktop/src-tauri/Cargo.toml、
+  # desktop/src-tauri/tauri.conf.json（后两者决定 Tauri 构建与更新清单版本）。
+  # 手动 workflow_dispatch（无标签）跳过该校验，仅用于临时构建。
+  verify-version:
+    name: 校验版本一致性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验标签与四处版本号一致
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          app_version="$(cat app/VERSION | sed 's/^v//')"
+          package_version="$(node -p "require('./desktop/package.json').version")"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -n1)"
+          tauri_version="$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")"
+          echo "标签: $tag"
+          echo "app/VERSION: $app_version / package.json: $package_version / Cargo.toml: $cargo_version / tauri.conf.json: $tauri_version"
+          fail=0
+          check() {
+            if [ "$2" != "$tag" ]; then
+              echo "::error::$1 ($2) 与标签 ($tag) 不一致"
+              fail=1
+            fi
+          }
+          check "app/VERSION" "$app_version"
+          check "desktop/package.json" "$package_version"
+          check "desktop/src-tauri/Cargo.toml" "$cargo_version"
+          check "desktop/src-tauri/tauri.conf.json" "$tauri_version"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::版本不一致，已中止发布。请同步标签与上述四处版本号后重打标签。"
+            exit 1
+          fi
+
+  cloud-system:
+    name: 云端系统二进制
+    needs: verify-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ext: ""
+            asset: zebragate-linux-amd64
+          - os: windows-latest
+            ext: ".exe"
+            asset: zebragate-windows-amd64.exe
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: 构建 Web 管理端产物
+        working-directory: app/web
+        run: |
+          bun install --frozen-lockfile
+          (cd default && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat ../../VERSION) bun run build)
+          (cd classic && VITE_REACT_APP_VERSION=$(cat ../../VERSION) bun run build)
+
+      - name: 编译后端二进制（embed 前端 + 注入版本号）
+        run: |
+          go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)'" -o "${{ matrix.asset }}" main.go
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: app/${{ matrix.asset }}
+
+  desktop-installer:
+    name: 桌面客户端安装包（Windows）
+    needs: verify-version
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: 写入发布构建配置（.env.production）
+        shell: bash
+        run: |
+          cat > .env.production <<EOF
+          ZEBRAGATE_DESKTOP_REMOTE_API_BASE_URL=${{ secrets.ZEBRAGATE_DESKTOP_REMOTE_API_BASE_URL || 'https://api.example.com' }}
+          ZEBRAGATE_DESKTOP_WEB_BASE_URL=${{ secrets.ZEBRAGATE_DESKTOP_WEB_BASE_URL || 'https://app.example.com' }}
+          EOF
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # 配置了更新签名私钥时，开启 updater 产物（生成签名的安装包 + .sig）用于自动更新。
+      # 安装包内置「检查更新」入口（endpoint + pubkey 已固化在 tauri.conf.json），
+      # 因此正式发布（打标签）若缺签名密钥，发布出的包会带一个永远 404 的更新入口——
+      # 这里直接中止发布并报警，而不是静默降级，避免该功能长期失败却无人察觉。
+      # 仅手动 workflow_dispatch（无标签）允许降级为普通安装包，用于临时测试构建。
+      - name: 判断是否启用自动更新签名
+        id: updater
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            echo "::error::正式发布缺少 TAURI_SIGNING_PRIVATE_KEY：安装包会带「检查更新」入口但无签名清单，自动更新将长期失败。请在仓库 Secrets 配置签名密钥后重试。"
+            exit 1
+          else
+            echo "::warning::未配置 TAURI_SIGNING_PRIVATE_KEY，降级为无签名安装包（仅限手动测试构建，自动更新不可用）。"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 构建 Tauri 安装包（含自动更新签名产物）
+        if: steps.updater.outputs.enabled == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --config src-tauri/tauri.updater.conf.json
+
+      - name: 构建 Tauri 安装包（无签名，降级）
+        if: steps.updater.outputs.enabled != 'true'
+        run: pnpm build
+
+      # 根据签名产物生成更新清单 latest.json，供客户端 updater endpoint 比对版本。
+      - name: 生成更新清单 latest.json
+        if: steps.updater.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          installer="$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -n1)"
+          sig="$(cat "${installer}.sig")"
+          asset="$(basename "$installer")"
+          notes="${GITHUB_REF_NAME:-v$version}"
+          cat > src-tauri/target/release/bundle/nsis/latest.json <<EOF
+          {
+            "version": "$version",
+            "notes": "$notes",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "$sig",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${notes}/${asset}"
+              }
+            }
+          }
+          EOF
+
+      - name: 上传安装包到 Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            desktop/src-tauri/target/release/bundle/nsis/latest.json

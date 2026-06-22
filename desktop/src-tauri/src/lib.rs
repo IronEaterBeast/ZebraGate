@@ -27,12 +27,14 @@ use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State as TauriState, WindowEvent,
 };
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_updater::UpdaterExt;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{interval, sleep, Duration};
@@ -107,6 +109,8 @@ const WINDOW_GEOMETRY_MARGIN: i32 = 20;
 // after mounting, which replaces this estimate.
 const MAIN_WINDOW_MIN_CONTENT_HEIGHT_LOGICAL: f64 = 205.0;
 const TRAY_MENU_TOGGLE_ID: &str = "toggle_main_window";
+const TRAY_MENU_AUTOSTART_ID: &str = "toggle_autostart";
+const TRAY_MENU_CHECK_UPDATE_ID: &str = "check_for_updates";
 const TRAY_MENU_QUIT_ID: &str = "quit";
 
 /// Computes the desktop window's default size and bottom-right position based on the
@@ -200,15 +204,70 @@ fn work_area_bottom_aligned_y(work_area_y: i32, work_area_height: i32, window_he
 static MAIN_WINDOW_READY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Global mutual-exclusion flag for the interactive update flow. The tray entry and
+/// the frontend `check_for_updates` command can both trigger an update check; without
+/// this guard they could pop multiple confirm dialogs and even run concurrent
+/// downloads/installs. The flow CAS-acquires this on entry and a RAII guard clears it
+/// on exit, so only one check runs at a time.
+static UPDATE_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// RAII guard that releases `UPDATE_IN_PROGRESS` when the update flow returns, covering
+/// every early-return / error path so the flag never leaks into a permanently-locked state.
+struct UpdateInProgressGuard;
+
+impl UpdateInProgressGuard {
+    /// Returns `Some(guard)` if no update flow was running (flag flipped false→true),
+    /// or `None` if one is already in progress.
+    fn try_acquire() -> Option<Self> {
+        UPDATE_IN_PROGRESS
+            .compare_exchange(
+                false,
+                true,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for UpdateInProgressGuard {
+    fn drop(&mut self) {
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Holds the tray's "打开窗口/隐藏窗口" menu item so its label can be updated
 /// when the main window's visibility changes.
 struct TrayToggleMenuItem(MenuItem<tauri::Wry>);
+
+/// Holds the tray's "开机自启" checkable menu item so its checked state can be
+/// re-synced with the OS autostart registration.
+struct TrayAutostartMenuItem(CheckMenuItem<tauri::Wry>);
 
 fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(
         app,
         TRAY_MENU_TOGGLE_ID,
         tray_toggle_menu_text(false),
+        true,
+        None::<&str>,
+    )?;
+    // 读取一次当前 OS 自启状态作为勾选初值；拿不到时按未启用展示，不影响其余流程。
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart_item = CheckMenuItem::with_id(
+        app,
+        TRAY_MENU_AUTOSTART_ID,
+        t!("tray.autostart"),
+        true,
+        autostart_enabled,
+        None::<&str>,
+    )?;
+    let check_update_item = MenuItem::with_id(
+        app,
+        TRAY_MENU_CHECK_UPDATE_ID,
+        t!("tray.check_update"),
         true,
         None::<&str>,
     )?;
@@ -220,7 +279,16 @@ fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show_item,
+            &autostart_item,
+            &check_update_item,
+            &separator,
+            &quit_item,
+        ],
+    )?;
 
     let normal_icon = Image::from_bytes(TRAY_ICON_BYTES)?;
 
@@ -231,6 +299,8 @@ fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app_handle, event| match event.id().as_ref() {
             TRAY_MENU_TOGGLE_ID => toggle_main_window_visibility(app_handle),
+            TRAY_MENU_AUTOSTART_ID => toggle_autostart(app_handle),
+            TRAY_MENU_CHECK_UPDATE_ID => check_for_updates_from_tray(app_handle.clone()),
             TRAY_MENU_QUIT_ID => confirm_and_quit_app(app_handle),
             _ => {}
         })
@@ -248,10 +318,162 @@ fn setup_system_tray(app: &tauri::App) -> tauri::Result<()> {
 
     app.manage(tray);
     app.manage(TrayToggleMenuItem(show_item));
+    app.manage(TrayAutostartMenuItem(autostart_item));
 
     spawn_tray_blink_task(app.handle().clone());
 
     Ok(())
+}
+
+/// Flips the OS autostart registration and re-syncs the tray check mark with the
+/// actual post-change state. The plugin handles each platform's standard
+/// mechanism (Windows registry Run key, macOS LaunchAgent, Linux .desktop);
+/// failures are logged and the check mark falls back to the real OS state so the
+/// menu never drifts out of sync with what the system will actually do at boot.
+fn toggle_autostart(app_handle: &AppHandle) {
+    let manager = app_handle.autolaunch();
+    let currently_enabled = manager.is_enabled().unwrap_or(false);
+
+    let result = if currently_enabled {
+        manager.disable()
+    } else {
+        manager.enable()
+    };
+    if let Err(error) = result {
+        eprintln!("Failed to toggle autostart: {error}");
+        // 仅写 stderr 时用户只能看到勾选状态回弹、无从得知原因；显式弹原生提示告知失败。
+        show_info_dialog(
+            app_handle,
+            t!("autostart.toggle_failed_title").into_owned(),
+            t!("autostart.toggle_failed_message", error = error.to_string()).into_owned(),
+        );
+    }
+
+    let effective = manager.is_enabled().unwrap_or(currently_enabled);
+    let item = app_handle.state::<TrayAutostartMenuItem>();
+    let _ = item.0.set_checked(effective);
+}
+
+/// Result of an update check, surfaced to both the tray flow and the frontend command.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckResult {
+    /// True when the updater found a newer version than the running build.
+    update_available: bool,
+    /// The newer version string (e.g. "1.2.0") when `update_available` is true.
+    version: Option<String>,
+}
+
+/// Tray "check for updates" entry point: runs the full interactive update flow on a
+/// background task (check → confirm → download/install → relaunch) and reports the
+/// outcome to the user via native dialogs, including the "already up to date" case so
+/// a manual check never looks like it did nothing.
+fn check_for_updates_from_tray(app_handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        match run_interactive_update_flow(&app_handle).await {
+            Ok(result) => {
+                if !result.update_available {
+                    show_update_info_dialog(&app_handle, t!("update.up_to_date").into_owned());
+                }
+                // When an update was available the flow either relaunches the app
+                // (after install) or the user declined; nothing more to report here.
+            }
+            Err(error) => {
+                show_update_info_dialog(
+                    &app_handle,
+                    t!("update.check_failed", error = error).into_owned(),
+                );
+            }
+        }
+    });
+}
+
+/// Checks the configured updater endpoint and, if a newer version exists, asks the
+/// user to confirm before downloading + installing it. On a confirmed install the
+/// app is relaunched into the new version. Returns whether an update was available
+/// so callers can distinguish "already current" from "updated/declined".
+async fn run_interactive_update_flow(app_handle: &AppHandle) -> Result<UpdateCheckResult, String> {
+    // 全局互斥：托盘与前端可同时触发检查，未加锁会弹出多个确认框甚至并发下载安装。
+    // 已有检查在进行时直接返回错误，由调用方提示用户稍候。guard 在函数返回时释放。
+    let Some(_update_guard) = UpdateInProgressGuard::try_acquire() else {
+        return Err(t!("update.already_running").into_owned());
+    };
+
+    let update = app_handle
+        .updater()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let Some(update) = update else {
+        return Ok(UpdateCheckResult {
+            update_available: false,
+            version: None,
+        });
+    };
+
+    let version = update.version.clone();
+    let confirmed = confirm_update_install(app_handle, &version).await;
+    if confirmed {
+        update
+            .download_and_install(|_received, _total| {}, || {})
+            .await
+            .map_err(|error| error.to_string())?;
+        // The new version is installed; relaunch so the user lands on it immediately.
+        app_handle.restart();
+    }
+
+    Ok(UpdateCheckResult {
+        update_available: true,
+        version: Some(version),
+    })
+}
+
+/// Shows a modal asking the user to confirm installing the discovered update.
+/// Parented to the main window when available so it surfaces in front of it.
+async fn confirm_update_install(app_handle: &AppHandle, version: &str) -> bool {
+    let (tx, rx) = oneshot::channel();
+    let mut dialog = app_handle
+        .dialog()
+        .message(t!("update.available_message", version = version))
+        .title(t!("update.available_title"))
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            t!("update.install_now").into_owned(),
+            t!("update.later").into_owned(),
+        ));
+
+    if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+        dialog = dialog.parent(&window);
+    }
+
+    dialog.show(move |confirmed| {
+        let _ = tx.send(confirmed);
+    });
+
+    rx.await.unwrap_or(false)
+}
+
+/// Shows a simple informational dialog (used for "up to date" / check failure).
+fn show_update_info_dialog(app_handle: &AppHandle, message: String) {
+    show_info_dialog(app_handle, t!("update.title").into_owned(), message);
+}
+
+/// Shows a simple informational dialog with an explicit title, parented to the main
+/// window when available so it surfaces in front of it.
+fn show_info_dialog(app_handle: &AppHandle, title: String, message: String) {
+    let mut dialog = app_handle
+        .dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Info);
+
+    if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+        dialog = dialog.parent(&window);
+    }
+
+    dialog.show(|_| {});
 }
 
 fn tray_toggle_menu_text(is_visible: bool) -> String {
@@ -912,8 +1134,26 @@ pub fn run() {
     rust_i18n::set_locale("zh-CN");
 
     tauri::Builder::default()
+        // single-instance 必须最先注册：当用户重复启动（双击图标、开机自启叠加手动
+        // 打开等）时，第二个进程不会再起一套本地代理/托盘，而是把已有进程的主窗口
+        // 唤到前台。否则会出现端口冲突、双托盘、重复代理。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新：客户端检查 updater endpoint 上的更新清单（latest.json），
+        // 比对版本后下载、校验签名、安装并重启。endpoint 与签名公钥在 tauri.conf.json
+        // 的 plugins.updater 配置，发布方需替换为自己的更新清单地址与公钥。
+        // process 插件提供安装完成后的重启能力（relaunch）。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        // 开机自启：用 LaunchAgent（macOS）/ 注册表 Run 键（Windows）/ .desktop（Linux）
+        // 这套各平台标准机制，由插件统一封装。是否启用由用户通过托盘菜单切换。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         // Show + position the main window as soon as its webview finishes loading,
         // independent of any frontend network calls. The window is created hidden
         // (`visible: false` in tauri.conf.json); previously its display was gated behind
@@ -1026,6 +1266,8 @@ pub fn run() {
             get_desktop_bootstrap_snapshot,
             get_desktop_runtime_snapshot,
             get_desktop_config,
+            set_privacy_protection_enabled,
+            check_for_updates,
             start_local_proxy,
             stop_local_proxy,
             get_local_proxy_status,
@@ -1096,6 +1338,31 @@ async fn get_desktop_config(
 ) -> Result<DesktopConfig, String> {
     let runtime = state.inner.lock().await;
     Ok(runtime.config.clone())
+}
+
+/// 设置「隐私保护」开关并落盘。隐私保护默认开启，会在本地拦截命中敏感关键词的请求；
+/// 用户需要可见、可控这一会拦截自身请求的能力，因此提供显式开关命令。返回写入后的真实状态。
+#[tauri::command]
+async fn set_privacy_protection_enabled(
+    state: TauriState<'_, DesktopSharedState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let mut runtime = state.inner.lock().await;
+    // 先落盘、成功后再改内存：若持久化失败直接返回 Err，内存仍保持旧值，
+    // 避免「界面回读到新值（误以为已保存），重启却恢复旧值」的写入欺骗。
+    let mut next_config = runtime.config.clone();
+    next_config.privacy_protection_enabled = enabled;
+    persist_desktop_config(state.config_path.as_path(), &next_config)?;
+    runtime.config = next_config;
+    Ok(runtime.config.privacy_protection_enabled)
+}
+
+/// Frontend-triggered "check for updates": runs the same interactive flow as the tray
+/// entry (check → confirm → download/install → relaunch) and returns whether an update
+/// was available so the UI can show "已是最新版本" vs. the in-flight update path.
+#[tauri::command]
+async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
+    run_interactive_update_flow(&app_handle).await
 }
 
 #[tauri::command]
@@ -1835,16 +2102,12 @@ async fn local_chat_completions_handler(
                 "ZebraGate Desktop blocked a request due to sensitive content. matched_count={}",
                 matched_keywords.len()
             );
-            record_proxy_error(
-        &state,
-        Some("Sensitive content category detected. Please remove sensitive information and try again.".to_string()),
-      )
-      .await;
+            record_proxy_error(&state, Some(t!("privacy.blocked_status").into_owned())).await;
             return openai_error_response(
-        StatusCode::FORBIDDEN,
-        "ZebraGate blocked this request because it may contain sensitive information. Please remove sensitive content and try again.",
-        "PRIVACY_BLOCKED",
-      );
+                StatusCode::FORBIDDEN,
+                t!("privacy.blocked_message").as_ref(),
+                "PRIVACY_BLOCKED",
+            );
         }
     }
 
@@ -3962,6 +4225,47 @@ mod tests {
     }
 
     #[test]
+    fn tray_autostart_menu_text_comes_from_i18n() {
+        rust_i18n::set_locale("zh-CN");
+        // 托盘「开机自启」勾选项的文案走 i18n，且确实命中中文语言包（非回退到 key）。
+        assert_eq!(t!("tray.autostart"), "开机自启");
+    }
+
+    #[test]
+    fn privacy_block_messages_come_from_i18n() {
+        rust_i18n::set_locale("zh-CN");
+        // 隐私拦截会拒绝用户请求，面向用户的两条文案必须走 i18n 且命中中文语言包（非回退到 key）。
+        // 回客户端的错误体要告知如何处理（去掉敏感内容/可关闭隐私保护）；错误面板状态要说明被本地拦截。
+        let blocked_message = t!("privacy.blocked_message");
+        assert!(blocked_message.contains("敏感"));
+        assert!(blocked_message.contains("隐私保护"));
+        let blocked_status = t!("privacy.blocked_status");
+        assert!(blocked_status.contains("敏感"));
+        assert!(blocked_status.contains("拦截"));
+    }
+
+    #[test]
+    fn tray_check_update_menu_text_comes_from_i18n() {
+        rust_i18n::set_locale("zh-CN");
+        // 托盘「检查更新」菜单项文案走 i18n，且命中中文语言包（非回退到 key）。
+        assert_eq!(t!("tray.check_update"), "检查更新");
+    }
+
+    #[test]
+    fn update_dialog_copy_comes_from_i18n_with_interpolation() {
+        rust_i18n::set_locale("zh-CN");
+        // 自动更新的原生对话框文案走 i18n 且命中中文语言包；带变量的两条要正确插值
+        // （version / error），锁定命名占位符格式，避免后续改 key/占位符时悄悄破坏。
+        assert_eq!(t!("update.up_to_date"), "当前已是最新版本。");
+        let available = t!("update.available_message", version = "1.2.0");
+        assert!(available.contains("1.2.0"));
+        assert!(available.contains("新版本"));
+        let failed = t!("update.check_failed", error = "timeout");
+        assert!(failed.contains("timeout"));
+        assert!(failed.contains("检查更新失败"));
+    }
+
+    #[test]
     fn tray_show_request_is_suppressed_until_main_window_is_ready() {
         // Before the first page load finishes the window is blank and
         // mis-positioned, so a tray click must not reveal it.
@@ -4092,6 +4396,50 @@ mod tests {
         assert_eq!(reloaded.default_group_id, config.default_group_id);
         assert_eq!(reloaded.last_port, config.last_port);
         assert_eq!(reloaded.device_id, config.device_id);
+    }
+
+    #[test]
+    fn persist_desktop_config_round_trips_privacy_protection_flag() {
+        // 隐私保护开关由用户在 UI 切换、写盘后必须稳定保留（重启仍生效）。
+        // 覆盖 true / false 两态，钉住 set_privacy_protection_enabled 命令依赖的持久化契约。
+        for enabled in [true, false] {
+            let temp_directory = tempdir().expect("tempdir should be created");
+            let config_path = temp_directory.path().join("desktop-config.json");
+            let config = test_config_with_group(
+                "http://localhost:3001".to_string(),
+                "user-1".to_string(),
+                Some(7788),
+                "zg-local-test",
+                vec!["zebragate_model".to_string()],
+                "device-1",
+                enabled,
+            );
+
+            persist_desktop_config(&config_path, &config).expect("config should persist");
+            let reloaded =
+                load_or_initialize_desktop_config(&config_path).expect("config should reload");
+
+            assert_eq!(reloaded.privacy_protection_enabled, enabled);
+        }
+    }
+
+    #[test]
+    fn update_in_progress_guard_is_mutually_exclusive() {
+        // 互斥契约：第一个 try_acquire 成功后，第二个必须失败（None），
+        // 直到第一个 guard 释放才能再次获取——这是托盘/前端并发触发更新时不弹多个对话框的保证。
+        let first = UpdateInProgressGuard::try_acquire();
+        assert!(first.is_some(), "首个更新检查应能获取互斥锁");
+        assert!(
+            UpdateInProgressGuard::try_acquire().is_none(),
+            "已有检查在进行时，第二个获取应失败"
+        );
+
+        drop(first);
+        let after_release = UpdateInProgressGuard::try_acquire();
+        assert!(
+            after_release.is_some(),
+            "前一个 guard 释放后应可再次获取互斥锁"
+        );
     }
 
     #[test]
@@ -5609,10 +5957,9 @@ mod tests {
             .await
             .expect("privacy error payload should decode");
         assert_eq!(payload.error.code, "PRIVACY_BLOCKED");
-        assert_eq!(
-      payload.error.message,
-      "ZebraGate blocked this request because it may contain sensitive information. Please remove sensitive content and try again."
-    );
+        // 面向用户的拦截文案走 i18n（默认 zh-CN）：回客户端的错误体必须与语言包一致，
+        // 不再硬编码英文。契约——文案不得泄漏命中的敏感关键词——仍然保留。
+        assert_eq!(payload.error.message, t!("privacy.blocked_message"));
         assert!(!payload.error.message.contains("Matched keywords"));
         assert_no_sensitive_keywords(&payload.error.message);
         let requests = remote.requests.lock().await;

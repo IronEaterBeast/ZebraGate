@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   clearUnavailableModelNotices,
+  getDesktopConfig,
   getModelCatalog,
   getModelSelection,
   getDesktopRuntimeSnapshot,
   refreshModelCatalog,
   refreshModelCatalogSilently,
   saveModelSelection,
+  setPrivacyProtectionEnabled,
   type DesktopGroupSummary,
   type UnavailableModelNotice
 } from "./lib/api-client";
@@ -43,6 +45,8 @@ export function GroupManagementWindow() {
   const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [privacyProtectionEnabled, setPrivacyProtectionEnabledState] = useState(true);
+  const [isTogglingPrivacyProtection, setIsTogglingPrivacyProtection] = useState(false);
 
   useEffect(() => {
     function handleHashChange(): void {
@@ -59,6 +63,7 @@ export function GroupManagementWindow() {
   useEffect(() => {
     void loadGroups();
     void loadModelCatalogState();
+    void loadDesktopConfigState();
     // 进入分组管理时主动触发一次拉取（不阻塞首屏渲染，先用缓存渲染再后台更新）。
     void performSilentCatalogRefresh();
     const interval = window.setInterval(() => {
@@ -189,6 +194,32 @@ export function GroupManagementWindow() {
     setUnavailableModelNotices([]);
   }
 
+  async function loadDesktopConfigState(): Promise<void> {
+    try {
+      const config = await getDesktopConfig();
+      setPrivacyProtectionEnabledState(config.privacyProtectionEnabled);
+    } catch {
+      // 隐私保护开关读取失败时保持上一次状态，不打扰用户；切换时会以后端返回的真实状态回写。
+    }
+  }
+
+  async function handleTogglePrivacyProtection(nextEnabled: boolean): Promise<void> {
+    try {
+      setIsTogglingPrivacyProtection(true);
+      // 以后端写入后返回的真实状态回写，保证开关与落盘状态始终一致。
+      const persisted = await setPrivacyProtectionEnabled(nextEnabled);
+      setPrivacyProtectionEnabledState(persisted);
+    } catch {
+      // 后端已改为「先落盘后改内存」，失败时内存仍是旧值，回读即真实状态，
+      // 避免开关停留在与落盘不一致的位置；同时显式提示用户保存失败，不再静默。
+      await loadDesktopConfigState();
+      setRefreshFeedbackKind("error");
+      setRefreshFeedback(t("privacy.toggleFailed"));
+    } finally {
+      setIsTogglingPrivacyProtection(false);
+    }
+  }
+
   function handleGroupCreated(group: DesktopGroupSummary): void {
     setGroups((current) => [...current, group]);
     setSelectedGroupId(group.id);
@@ -226,6 +257,9 @@ export function GroupManagementWindow() {
       onSaveSelection={handleSaveSelection}
       onSelectGroup={setSelectedGroupId}
       onClearUnavailableModelNotices={handleClearUnavailableModelNotices}
+      privacyProtectionEnabled={privacyProtectionEnabled}
+      isTogglingPrivacyProtection={isTogglingPrivacyProtection}
+      onTogglePrivacyProtection={handleTogglePrivacyProtection}
       refreshFeedback={refreshFeedback}
       refreshFeedbackKind={refreshFeedbackKind}
       selectedModels={selectedModels}

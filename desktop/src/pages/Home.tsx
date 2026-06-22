@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
 import {
+  checkForUpdates,
   openStatusReportWindow,
   resizeMainWindowToContent,
   type AuthStatusSnapshot,
@@ -28,6 +30,58 @@ function CopyButton({ value }: { value: string }) {
   return (
     <button className="icon-button" onClick={() => void handleCopy()} title={t("common.copy")} type="button">
       {copied ? t("common.copied") : t("common.copy")}
+    </button>
+  );
+}
+
+type UpdateCheckPhase = "idle" | "checking" | "up-to-date" | "failed";
+
+// 「检查更新」按钮：触发后端检查更新流程。发现新版本时由后端弹原生确认框并自动安装/重启；
+// 已是最新或失败时在按钮旁短暂回显状态，避免用户以为点击无反应。
+function UpdateCheckButton({
+  className,
+  checkForUpdatesFn = checkForUpdates
+}: {
+  className?: string;
+  checkForUpdatesFn?: typeof checkForUpdates;
+}) {
+  const { t } = useTranslation();
+  const [phase, setPhase] = useState<UpdateCheckPhase>("idle");
+
+  async function handleCheck(): Promise<void> {
+    if (phase === "checking") {
+      return;
+    }
+    setPhase("checking");
+    try {
+      const result = await checkForUpdatesFn();
+      // 有新版本时后端会接管确认/安装/重启；这里只需在「无更新」时回显已是最新。
+      setPhase(result.updateAvailable ? "idle" : "up-to-date");
+    } catch {
+      setPhase("failed");
+    } finally {
+      window.setTimeout(() => setPhase("idle"), 2400);
+    }
+  }
+
+  const label =
+    phase === "checking"
+      ? t("home.checkingForUpdates")
+      : phase === "up-to-date"
+        ? t("home.upToDate")
+        : phase === "failed"
+          ? t("home.updateCheckFailed")
+          : t("home.checkForUpdates");
+
+  return (
+    <button
+      className={className ?? "icon-button"}
+      onClick={() => void handleCheck()}
+      disabled={phase === "checking"}
+      title={t("home.checkForUpdates")}
+      type="button"
+    >
+      {label}
     </button>
   );
 }
@@ -60,6 +114,23 @@ export function HomePage({
   const { t } = useTranslation();
   const infoListRef = useRef<HTMLDivElement>(null);
   const statusBarRef = useRef<HTMLElement>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getVersion()
+      .then((version) => {
+        if (!cancelled) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => {
+        // 版本号仅用于展示，拿不到时静默忽略，不影响主流程。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -111,6 +182,10 @@ export function HomePage({
         <button onClick={() => void onLogin()} disabled={isBusy} type="button">
           {t("home.signIn")}
         </button>
+        {appVersion ? (
+          <span className="signin-version">{t("home.version", { version: appVersion })}</span>
+        ) : null}
+        <UpdateCheckButton className="signin-update-button" />
       </div>
     );
   }
@@ -193,6 +268,7 @@ export function HomePage({
         >
           ⏻
         </button>
+        <UpdateCheckButton className="status-update-button" />
         <span className="status-spacer" />
         {currentStatusReport.items.length > 0 ? (
           <button

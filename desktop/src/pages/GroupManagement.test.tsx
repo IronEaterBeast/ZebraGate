@@ -57,6 +57,9 @@ describe("GroupManagementPage", () => {
         onSaveSelection={async () => undefined}
         onSelectGroup={() => undefined}
         onClearUnavailableModelNotices={async () => undefined}
+        privacyProtectionEnabled={true}
+        isTogglingPrivacyProtection={false}
+        onTogglePrivacyProtection={async () => undefined}
         refreshFeedback={null}
         refreshFeedbackKind="success"
         selectedModels={["model-a"]}
@@ -79,6 +82,52 @@ describe("GroupManagementPage", () => {
     expect(html.indexOf("model 列表更新时间")).toBeGreaterThan(html.indexOf("分组名"));
   });
 
+  it("renders the privacy protection toggle reflecting the current state", () => {
+    const groups = createGroups();
+
+    function renderWithPrivacy(enabled: boolean): string {
+      return renderToStaticMarkup(
+        <GroupManagementPage
+          models={createModels()}
+          catalogError={null}
+          catalogFetchedAt={1_800_000_000}
+          groups={groups}
+          isCatalogStale={false}
+          isLoading={false}
+          isRefreshingCatalog={false}
+          onGroupCreated={() => undefined}
+          onGroupDeleted={() => undefined}
+          onGroupUpdated={() => undefined}
+          onRefreshCatalog={async () => undefined}
+          onSaveSelection={async () => undefined}
+          onSelectGroup={() => undefined}
+          onClearUnavailableModelNotices={async () => undefined}
+          privacyProtectionEnabled={enabled}
+          isTogglingPrivacyProtection={false}
+          onTogglePrivacyProtection={async () => undefined}
+          refreshFeedback={null}
+          refreshFeedbackKind="success"
+          selectedModels={["model-a"]}
+          selectedGroup={groups[0]}
+          unavailableModelNotices={[]}
+        />
+      );
+    }
+
+    const enabledHtml = renderWithPrivacy(true);
+    // 文案与开关状态都要正确：用户必须能看到「隐私保护」这一会拦截自身请求的能力，并知道其作用。
+    expect(enabledHtml).toContain("隐私保护");
+    expect(enabledHtml).toContain("命中敏感关键词的请求将被本地拦截");
+    expect(enabledHtml).toContain('class="privacy-protection-toggle"');
+    expect(enabledHtml).toContain('type="checkbox" checked');
+
+    const disabledHtml = renderWithPrivacy(false);
+    // 关闭态：复选框不应带 checked 属性。
+    const toggleStart = disabledHtml.indexOf('class="privacy-protection-toggle"');
+    const toggleSegment = disabledHtml.slice(toggleStart, toggleStart + 200);
+    expect(toggleSegment).not.toContain("checked");
+  });
+
   it("shows the standard empty-selection notice when no models are selected", () => {
     const groups = createGroups();
     const html = renderToStaticMarkup(
@@ -97,6 +146,9 @@ describe("GroupManagementPage", () => {
         onSaveSelection={async () => undefined}
         onSelectGroup={() => undefined}
         onClearUnavailableModelNotices={async () => undefined}
+        privacyProtectionEnabled={true}
+        isTogglingPrivacyProtection={false}
+        onTogglePrivacyProtection={async () => undefined}
         refreshFeedback={null}
         refreshFeedbackKind="success"
         selectedModels={[]}
@@ -128,6 +180,9 @@ describe("GroupManagementPage", () => {
         onSaveSelection={async () => undefined}
         onSelectGroup={() => undefined}
         onClearUnavailableModelNotices={async () => undefined}
+        privacyProtectionEnabled={true}
+        isTogglingPrivacyProtection={false}
+        onTogglePrivacyProtection={async () => undefined}
         refreshFeedback={null}
         refreshFeedbackKind="success"
         selectedModels={["Alpha"]}
@@ -166,6 +221,9 @@ describe("GroupManagementPage", () => {
         onSaveSelection={async () => undefined}
         onSelectGroup={() => undefined}
         onClearUnavailableModelNotices={async () => undefined}
+        privacyProtectionEnabled={true}
+        isTogglingPrivacyProtection={false}
+        onTogglePrivacyProtection={async () => undefined}
         refreshFeedback="刷新失败，请稍后重试"
         refreshFeedbackKind="error"
         selectedModels={[]}
