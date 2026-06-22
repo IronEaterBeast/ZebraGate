@@ -24,8 +24,11 @@ export default defineConfig(
       'react-refresh': reactRefresh,
     },
     rules: {
-      ...reactHooks.configs.recommended.rules,
-      'react-hooks/incompatible-library': 'off',
+      // The application does not enable React Compiler yet. Keep the stable
+      // Hooks correctness rules without applying Compiler migration rules to
+      // the entire existing codebase.
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

@@ -162,7 +162,6 @@ export function JsonToggleSection({
   return (
     <SettingsAccordion value={value} title={title}>
       <Form {...form}>
-        {/* eslint-disable-next-line react-hooks/refs */}
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}

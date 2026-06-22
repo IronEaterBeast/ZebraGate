@@ -18,17 +18,20 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useCallback, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useTranslation } from 'react-i18next'
+import i18next from 'i18next'
 import { toast } from 'sonner'
 import { getUserModels, getUserGroups } from './api'
 import { PlaygroundChat } from './components/playground-chat'
 import { PlaygroundInput } from './components/playground-input'
 import { usePlaygroundState, useChatHandler } from './hooks'
 import { createUserMessage, createLoadingAssistantMessage } from './lib'
+import {
+  PLAYGROUND_GROUPS_QUERY_KEY,
+  PLAYGROUND_MODELS_QUERY_KEY,
+} from './query-keys'
 import type { Message as MessageType } from './types'
 
 export function Playground() {
-  const { t } = useTranslation()
   const {
     config,
     parameterEnabled,
@@ -54,7 +57,7 @@ export function Playground() {
 
   // Load models
   const { data: modelsData, isLoading: isLoadingModels } = useQuery({
-    queryKey: ['playground-models'],
+    queryKey: PLAYGROUND_MODELS_QUERY_KEY,
     queryFn: async () => {
       try {
         return await getUserModels()
@@ -62,7 +65,7 @@ export function Playground() {
         toast.error(
           error instanceof Error
             ? error.message
-            : t('Failed to load playground models')
+            : i18next.t('Failed to load playground models')
         )
         return []
       }
@@ -71,7 +74,7 @@ export function Playground() {
 
   // Load groups
   const { data: groupsData } = useQuery({
-    queryKey: ['playground-groups'],
+    queryKey: PLAYGROUND_GROUPS_QUERY_KEY,
     queryFn: async () => {
       try {
         return await getUserGroups()
@@ -79,7 +82,7 @@ export function Playground() {
         toast.error(
           error instanceof Error
             ? error.message
-            : t('Failed to load playground groups')
+            : i18next.t('Failed to load playground groups')
         )
         return []
       }

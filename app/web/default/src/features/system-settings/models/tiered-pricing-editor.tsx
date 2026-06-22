@@ -1655,7 +1655,6 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
     initRef.current = true
     const parsedConfig = tryParseVisualConfig(currentExpr)
     if (parsedConfig) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setVisualConfig(parsedConfig)
       setEditorMode('visual')
     } else if (currentExpr) {

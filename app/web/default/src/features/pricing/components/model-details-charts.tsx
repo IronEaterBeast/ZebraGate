@@ -230,7 +230,8 @@ export function UptimeTrendChart(props: {
           size: 5,
           stroke: '#ffffff',
           lineWidth: 1.5,
-          fill: (datum: { uptime: number }) => getSuccessRateColor(datum.uptime),
+          fill: (datum: { uptime: number }) =>
+            getSuccessRateColor(datum.uptime),
         },
       },
       tooltip: {

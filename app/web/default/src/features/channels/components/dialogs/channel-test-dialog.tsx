@@ -63,13 +63,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   DataTableBulkActions as BulkActionsToolbar,
   DataTablePagination,
   DataTableView,
   useDataTable,
 } from '@/components/data-table'
-import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
 import {
   sideDrawerContentClassName,
@@ -1327,11 +1327,7 @@ function FailureDetailsSheet({
   )
 }
 
-function TestModelsBulkActions({
-  table,
-}: {
-  table: TanStackTable<ModelRow>
-}) {
+function TestModelsBulkActions({ table }: { table: TanStackTable<ModelRow> }) {
   const { t } = useTranslation()
   const { copyToClipboard } = useCopyToClipboard()
   const selectedRows = table.getFilteredSelectedRowModel().rows

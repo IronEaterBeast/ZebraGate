@@ -61,6 +61,9 @@ export function SettingsPageProvider(props: SettingsPageProviderProps) {
   )
 }
 
+// This colocated hook consumes the private context used by the components in
+// this module and is safe to preserve across Fast Refresh updates.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useSuppressSettingsSectionHeader() {
   return useContext(SettingsPageContext).suppressSectionHeader
 }
