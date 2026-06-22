@@ -13,8 +13,8 @@
   界面（登录页、主界面状态栏）均提供「检查更新」入口；发现新版本时弹原生确认框，
   确认后自动下载、校验签名、安装并重启，已是最新或检查失败均有明确反馈。更新清单地址
   与签名公钥在 `tauri.conf.json` 的 `plugins.updater` 配置（发布方替换为自有地址与公钥）；
-  发布流水线在配置了签名私钥（仓库 Secret）时产出签名安装包与 `latest.json` 更新清单，
-  未配置则降级为普通安装包、流程不中断。
+  发布流水线在配置了签名私钥（仓库 Secret）时产出签名安装包与 `latest.json` 更新清单；
+  正式标签发布缺少签名私钥时会主动中止，只有手动测试构建允许降级为普通安装包。
 - 新增「隐私保护」开关：隐私保护原本默认开启并在本地拦截命中敏感关键词的请求，
   但既无界面入口、用户也无从知晓，被拦截时只会收到一条英文 403。本次在分组管理窗口
   顶部提供可勾选的「隐私保护」开关与说明文案（切换即落盘、按后端返回的真实状态回写），
@@ -55,5 +55,5 @@
     并上传到 GitHub Release。
 - 统一版本基线为 `v1.0.0`（云端 `app/VERSION`、桌面 `package.json` / `tauri.conf.json` / `Cargo.toml`）。
 
-[Unreleased]: https://github.com/QuantumNous/new-api/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/QuantumNous/new-api/releases/tag/v1.0.0
+[Unreleased]: https://github.com/IronEaterBeast/ZebraGate/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/IronEaterBeast/ZebraGate/releases/tag/v1.0.0
