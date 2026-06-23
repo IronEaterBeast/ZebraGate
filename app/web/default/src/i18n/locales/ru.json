@@ -2441,6 +2441,7 @@
     "Model Analytics": "Аналитика моделей",
     "Model Analytics Defaults": "Настройки аналитики моделей по умолчанию",
     "Model Analytics Filters": "Фильтры аналитики моделей",
+    "Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.": "Аналитика моделей агрегируется периодически, поэтому последние запросы могут появиться через несколько минут.",
     "model billing support": "поддержка биллинга моделей",
     "Model Call Analytics": "Аналитика вызовов моделей",
     "Model context usage": "Использование контекста модели",

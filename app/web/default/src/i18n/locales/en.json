@@ -2441,6 +2441,7 @@
     "Model Analytics": "Model Analytics",
     "Model Analytics Defaults": "Model Analytics Defaults",
     "Model Analytics Filters": "Model Analytics Filters",
+    "Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.": "Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.",
     "model billing support": "model billing support",
     "Model Call Analytics": "Model Call Analytics",
     "Model context usage": "Model context usage",

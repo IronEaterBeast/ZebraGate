@@ -2441,6 +2441,7 @@
     "Model Analytics": "Analyse des modèles",
     "Model Analytics Defaults": "Paramètres par défaut de l’analyse des modèles",
     "Model Analytics Filters": "Filtres d’analyse des modèles",
+    "Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.": "Les statistiques des modèles sont agrégées périodiquement ; les requêtes récentes peuvent prendre quelques minutes à apparaître.",
     "model billing support": "prise en charge de la facturation des modèles",
     "Model Call Analytics": "Analyse des appels de modèles",
     "Model context usage": "Utilisation du contexte du modèle",

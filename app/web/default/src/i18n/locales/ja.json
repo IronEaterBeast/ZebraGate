@@ -2441,6 +2441,7 @@
     "Model Analytics": "モデル分析",
     "Model Analytics Defaults": "モデル分析のデフォルト設定",
     "Model Analytics Filters": "モデル分析フィルター",
+    "Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.": "モデル分析は定期的に集計されるため、最近のリクエストが表示されるまで数分かかる場合があります。",
     "model billing support": "モデル課金対応",
     "Model Call Analytics": "モデル呼び出し分析",
     "Model context usage": "モデルのコンテキスト使用量",

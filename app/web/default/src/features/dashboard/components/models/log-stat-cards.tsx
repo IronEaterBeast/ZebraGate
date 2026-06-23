@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect, useState } from 'react'
+import { Info } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '@/stores/auth-store'
 import { formatCompactNumber, formatNumber, formatQuota } from '@/lib/format'
@@ -56,7 +57,7 @@ function formatStatNumber(value: number, locale: Intl.LocalesArgument) {
 }
 
 export function LogStatCards(props: LogStatCardsProps) {
-  const { i18n } = useTranslation()
+  const { i18n, t } = useTranslation()
   const statCardsConfig = useModelStatCardsConfig()
   const user = useAuthStore((state) => state.auth.user)
   const isAdmin = !!(user?.role && user.role >= 10)
@@ -140,6 +141,14 @@ export function LogStatCards(props: LogStatCardsProps) {
 
   return (
     <div className='overflow-hidden rounded-lg border'>
+      <div className='text-muted-foreground flex items-start gap-2 border-b px-3 py-2 text-xs sm:px-5'>
+        <Info className='mt-0.5 size-3.5 shrink-0' aria-hidden='true' />
+        <span>
+          {t(
+            'Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.'
+          )}
+        </span>
+      </div>
       <div className='divide-border/60 grid min-w-0 grid-cols-2 divide-x sm:grid-cols-3 lg:grid-cols-5'>
         {items.map((it, idx) => {
           const Icon = it.icon

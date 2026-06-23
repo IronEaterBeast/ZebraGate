@@ -2441,6 +2441,7 @@
     "Model Analytics": "模型数据分析",
     "Model Analytics Defaults": "模型分析默认设置",
     "Model Analytics Filters": "模型分析筛选",
+    "Model analytics are aggregated periodically, so recent requests may take a few minutes to appear.": "模型调用统计会定期聚合，最近的请求可能需要几分钟后才会显示。",
     "model billing support": "模型计费支持",
     "Model Call Analytics": "模型调用分析",
     "Model context usage": "模型上下文用量",
