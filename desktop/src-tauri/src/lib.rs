@@ -4032,6 +4032,30 @@ mod tests {
         });
     }
 
+    fn find_available_consecutive_test_ports() -> (u16, u16) {
+        for _ in 0..100 {
+            let base_listener = std::net::TcpListener::bind((LOCAL_PROXY_HOST, 0))
+                .expect("ephemeral port should bind for discovery");
+            let base = base_listener
+                .local_addr()
+                .expect("ephemeral port should resolve")
+                .port();
+
+            if base == u16::MAX {
+                continue;
+            }
+
+            let next = base + 1;
+            if let Ok(next_listener) = std::net::TcpListener::bind((LOCAL_PROXY_HOST, next)) {
+                drop(next_listener);
+                drop(base_listener);
+                return (base, next);
+            }
+        }
+
+        panic!("consecutive local ports should be available for fallback test");
+    }
+
     /// Builds a `DesktopConfig` with a single "default" group, for tests that don't
     /// exercise the multi-group behavior directly.
     fn test_config_with_group(
@@ -5431,16 +5455,17 @@ mod tests {
 
     #[tokio::test]
     async fn find_available_listener_falls_back_when_default_port_is_busy() {
-        let busy_listener = std::net::TcpListener::bind((LOCAL_PROXY_HOST, 7788))
-            .expect("default local proxy port should bind for test");
+        let (base_port, fallback_port) = find_available_consecutive_test_ports();
+        let busy_listener = std::net::TcpListener::bind((LOCAL_PROXY_HOST, base_port))
+            .expect("preferred local proxy port should bind for test");
         let (listener, port) = bind_local_proxy_listener(LocalPortBindingStrategy::FallbackRange {
-            start_port: 7788,
+            start_port: base_port,
             max_attempts: 3,
         })
         .await
         .expect("a fallback port should be found");
 
-        assert_eq!(port, 7789);
+        assert_eq!(port, fallback_port);
         drop(listener);
         drop(busy_listener);
     }
