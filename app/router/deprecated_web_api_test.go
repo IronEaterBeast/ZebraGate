@@ -54,8 +54,8 @@ func assertDeprecatedWebAPI(t *testing.T, router http.Handler, method, path stri
 	if body.Error.Code != "invalid_request" {
 		t.Fatalf("%s %s error code = %q, want invalid_request", method, path, body.Error.Code)
 	}
-	if body.Error.Type != "new_api_error" {
-		t.Fatalf("%s %s error type = %q, want new_api_error", method, path, body.Error.Type)
+	if body.Error.Type != "zebragate_error" {
+		t.Fatalf("%s %s error type = %q, want zebragate_error", method, path, body.Error.Type)
 	}
 	if !strings.Contains(body.Error.Message, "旧 Web API 已停用") {
 		t.Fatalf("%s %s message = %q, want deprecated web api message", method, path, body.Error.Message)
