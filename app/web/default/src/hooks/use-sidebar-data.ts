@@ -21,7 +21,6 @@ import {
   Box,
   CreditCard,
   FileText,
-  FlaskConical,
   LayoutDashboard,
   ListTodo,
   MessageSquare,
@@ -51,11 +50,6 @@ export function useSidebarData(): SidebarData {
         id: 'chat',
         title: t('Chat'),
         items: [
-          {
-            title: t('Playground'),
-            url: '/playground',
-            icon: FlaskConical,
-          },
           {
             title: t('Chat'),
             icon: MessageSquare,

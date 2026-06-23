@@ -279,13 +279,17 @@ func SetApiRouter(router *gin.Engine) {
 			modelTagRoute.PUT("/", controller.UpdateModelTags)
 		}
 		tokenRoute := apiRouter.Group("/token")
+		tokenRoute.Use(middleware.DeprecatedWebAPI())
 		tokenRoute.Use(middleware.UserAuth())
 		{
+			tokenRoute.GET("", controller.GetAllTokens)
 			tokenRoute.GET("/", controller.GetAllTokens)
 			tokenRoute.GET("/search", middleware.SearchRateLimit(), controller.SearchTokens)
 			tokenRoute.GET("/:id", controller.GetToken)
 			tokenRoute.POST("/:id/key", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetTokenKey)
+			tokenRoute.POST("", controller.AddToken)
 			tokenRoute.POST("/", controller.AddToken)
+			tokenRoute.PUT("", controller.UpdateToken)
 			tokenRoute.PUT("/", controller.UpdateToken)
 			tokenRoute.DELETE("/:id", controller.DeleteToken)
 			tokenRoute.POST("/batch", controller.DeleteTokenBatch)
@@ -296,8 +300,10 @@ func SetApiRouter(router *gin.Engine) {
 		usageRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{
 			tokenUsageRoute := usageRoute.Group("/token")
+			tokenUsageRoute.Use(middleware.DeprecatedWebAPI())
 			tokenUsageRoute.Use(middleware.TokenAuthReadOnly())
 			{
+				tokenUsageRoute.GET("", controller.GetTokenUsage)
 				tokenUsageRoute.GET("/", controller.GetTokenUsage)
 			}
 		}
@@ -330,7 +336,7 @@ func SetApiRouter(router *gin.Engine) {
 
 		logRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{
-			logRoute.GET("/token", middleware.TokenAuthReadOnly(), controller.GetLogByKey)
+			logRoute.GET("/token", middleware.DeprecatedWebAPI(), middleware.TokenAuthReadOnly(), controller.GetLogByKey)
 		}
 		groupRoute := apiRouter.Group("/group")
 		groupRoute.Use(middleware.AdminAuth())

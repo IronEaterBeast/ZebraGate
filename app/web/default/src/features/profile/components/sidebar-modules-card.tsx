@@ -57,13 +57,8 @@ export function SidebarModulesCard() {
     {
       key: 'chat',
       title: t('Chat Area'),
-      description: t('Playground and chat functions'),
+      description: t('Chat session management'),
       modules: [
-        {
-          key: 'playground',
-          title: t('Playground'),
-          description: t('AI model testing environment'),
-        },
         {
           key: 'chat',
           title: t('Chat'),
@@ -80,11 +75,6 @@ export function SidebarModulesCard() {
           key: 'detail',
           title: t('Dashboard'),
           description: t('System data statistics'),
-        },
-        {
-          key: 'token',
-          title: t('Token Management'),
-          description: t('API token management'),
         },
         {
           key: 'log',

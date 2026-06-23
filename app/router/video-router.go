@@ -18,6 +18,7 @@ func SetVideoRouter(router *gin.Engine) {
 
 	videoV1Router := router.Group("/v1")
 	videoV1Router.Use(middleware.RouteTag("relay"))
+	videoV1Router.Use(middleware.DeprecatedWebAPI())
 	videoV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
 	{
 		videoV1Router.POST("/video/generations", controller.RelayTask)
@@ -33,6 +34,7 @@ func SetVideoRouter(router *gin.Engine) {
 
 	klingV1Router := router.Group("/kling/v1")
 	klingV1Router.Use(middleware.RouteTag("relay"))
+	klingV1Router.Use(middleware.DeprecatedWebAPI())
 	klingV1Router.Use(middleware.KlingRequestConvert(), middleware.TokenAuth(), middleware.Distribute())
 	{
 		klingV1Router.POST("/videos/text2video", controller.RelayTask)
@@ -44,9 +46,11 @@ func SetVideoRouter(router *gin.Engine) {
 	// Jimeng official API routes - direct mapping to official API format
 	jimengOfficialGroup := router.Group("jimeng")
 	jimengOfficialGroup.Use(middleware.RouteTag("relay"))
+	jimengOfficialGroup.Use(middleware.DeprecatedWebAPI())
 	jimengOfficialGroup.Use(middleware.JimengRequestConvert(), middleware.TokenAuth(), middleware.Distribute())
 	{
 		// Maps to: /?Action=CVSync2AsyncSubmitTask&Version=2022-08-31 and /?Action=CVSync2AsyncGetResult&Version=2022-08-31
+		jimengOfficialGroup.POST("", controller.RelayTask)
 		jimengOfficialGroup.POST("/", controller.RelayTask)
 	}
 }

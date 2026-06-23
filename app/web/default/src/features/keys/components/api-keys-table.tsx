@@ -16,8 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi } from '@tanstack/react-router'
 import { type Table as TanstackTable } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -56,7 +56,6 @@ import { useApiKeys } from './api-keys-provider'
 import { DataTableBulkActions } from './data-table-bulk-actions'
 import { DataTableRowActions } from './data-table-row-actions'
 
-const route = getRouteApi('/_authenticated/keys/')
 const API_KEYS_COLUMN_VISIBILITY_STORAGE_KEY = 'api-keys:column-visibility'
 
 function isDisabledApiKeyRow(apiKey: ApiKey) {
@@ -183,6 +182,7 @@ export function ApiKeysTable() {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
   const columns = useApiKeysColumns()
+  const [tableSearch, setTableSearch] = useState<Record<string, unknown>>({})
 
   const {
     globalFilter,
@@ -193,8 +193,13 @@ export function ApiKeysTable() {
     onPaginationChange,
     ensurePageInRange,
   } = useTableUrlState({
-    search: route.useSearch(),
-    navigate: route.useNavigate(),
+    search: tableSearch,
+    navigate: ({ search }) => {
+      if (search === true) return
+      setTableSearch((prev) =>
+        typeof search === 'function' ? search(prev) : search
+      )
+    },
     pagination: { defaultPage: 1, defaultPageSize: 20 },
     globalFilter: { enabled: true, key: 'filter' },
     columnFilters: [

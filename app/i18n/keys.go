@@ -26,6 +26,7 @@ const (
 	MsgAlreadyExists     = "common.already_exists"
 	MsgNameCannotBeEmpty = "common.name_cannot_be_empty"
 	MsgBatchTooMany      = "common.batch_too_many"
+	MsgDeprecatedWebAPI  = "common.deprecated_web_api"
 )
 
 // Auth middleware messages
