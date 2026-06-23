@@ -85,9 +85,6 @@ export {
 } from './lib/oauth'
 
 export {
-  saveUserId,
-  getUserId,
-  removeUserId,
   getAffiliateCode,
   saveAffiliateCode,
 } from './lib/storage'

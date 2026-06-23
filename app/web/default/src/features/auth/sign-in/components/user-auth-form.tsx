@@ -164,7 +164,7 @@ export function UserAuthForm({
           return
         }
 
-        await handleLoginSuccess(res.data as { id?: number } | null, redirectTo)
+        await handleLoginSuccess(redirectTo)
         toast.success(t('Welcome back!'))
       }
     } catch (_error) {
@@ -201,7 +201,7 @@ export function UserAuthForm({
     try {
       const res = await wechatLoginByCode(wechatCode)
       if (res?.success) {
-        await handleLoginSuccess(res.data as { id?: number } | null, redirectTo)
+        await handleLoginSuccess(redirectTo)
         toast.success(t('Signed in via WeChat'))
         handleWeChatDialogChange(false)
       } else {
@@ -264,10 +264,7 @@ export function UserAuthForm({
         throw new Error(t('Missing user data from Passkey login response'))
       }
 
-      await handleLoginSuccess(
-        finish.data as { id?: number } | null,
-        redirectTo
-      )
+      await handleLoginSuccess(redirectTo)
       toast.success(t('Signed in with Passkey'))
     } catch (error: unknown) {
       if (error instanceof DOMException && error.name === 'NotAllowedError') {

@@ -49,7 +49,6 @@ import {
   BACKUP_CODE_LENGTH,
 } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
-import { saveUserId } from '@/features/auth/lib/storage'
 import {
   isValidOTP,
   isValidBackupCode,
@@ -108,11 +107,6 @@ export function OtpForm({ className, ...props }: OtpFormProps) {
 
       // Update auth store
       auth.setUser(userData as User)
-
-      // Store user ID in localStorage for compatibility
-      if (userData.id) {
-        saveUserId(userData.id)
-      }
 
       toast.success(t('Signed in'))
       redirectToLogin() // This will redirect to dashboard via the redirect logic

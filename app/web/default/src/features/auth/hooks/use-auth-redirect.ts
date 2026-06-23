@@ -21,7 +21,6 @@ import i18n from 'i18next'
 import { useAuthStore } from '@/stores/auth-store'
 import { getSelf } from '@/lib/api'
 import type { User } from '@/features/users/types'
-import { saveUserId } from '../lib/storage'
 
 function getSavedLanguage(user: User): string | undefined {
   const userData = user as Record<string, unknown>
@@ -50,29 +49,15 @@ export function useAuthRedirect() {
 
   /**
    * Handle successful login
-   * @param userData - Optional user data from login response
    * @param redirectTo - Redirect path after login
    */
-  const handleLoginSuccess = async (
-    userData?: { id?: number } | null,
-    redirectTo?: string
-  ) => {
-    // Save user ID if available
-    if (userData?.id) {
-      saveUserId(userData.id)
-    }
-
+  const handleLoginSuccess = async (redirectTo?: string) => {
     // Fetch and set user data
     try {
       const self = await getSelf()
       if (self?.success && self.data) {
         const user = self.data as User
         auth.setUser(user)
-
-        // Update user ID if not already set
-        if (user.id) {
-          saveUserId(user.id)
-        }
 
         // Restore saved language preference
         const savedLang = getSavedLanguage(user)

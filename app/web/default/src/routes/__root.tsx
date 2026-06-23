@@ -101,11 +101,6 @@ export const Route = createRootRouteWithContext<{
     const needsSetupCheck =
       !setupStatusChecked && !pathname.startsWith('/setup')
 
-    // 用户信息已通过 auth-store 从 localStorage 恢复
-    // 如果 auth.user 存在，说明用户已登录（有缓存的用户数据）
-    // 如果 auth.user 为 null，说明用户未登录，直接让 _authenticated 路由处理重定向
-    // 不再调用 getSelf() API，避免不必要的网络请求和等待
-
     // 只检查 setup 状态（如果需要）
     if (needsSetupCheck) {
       const status = await getSetupStatus().catch((error) => {
@@ -122,8 +117,6 @@ export const Route = createRootRouteWithContext<{
       setupStatusChecked = true
       setSetupStatusCache(true)
     }
-    // 用户认证状态完全依赖 localStorage 缓存
-    // 如果用户有有效 session 但 localStorage 被清空，会被重定向到登录页重新登录
   },
   component: RootComponent,
   notFoundComponent: NotFoundError,

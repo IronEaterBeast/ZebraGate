@@ -124,16 +124,6 @@ function OAuthCallback() {
           }
           if (selfResponse?.success && selfResponse.data) {
             useAuthStore.getState().auth.setUser(selfResponse.data)
-            try {
-              if (
-                typeof window !== 'undefined' &&
-                selfResponse.data?.id != null
-              ) {
-                window.localStorage.setItem('uid', String(selfResponse.data.id))
-              }
-            } catch (_error) {
-              void _error
-            }
             return true
           }
         } catch (_error) {
@@ -186,13 +176,6 @@ function OAuthCallback() {
           // Otherwise it's a login, use payload user if available
           if (loginUser) {
             useAuthStore.getState().auth.setUser(loginUser)
-            try {
-              if (typeof window !== 'undefined' && loginUser.id != null) {
-                window.localStorage.setItem('uid', String(loginUser.id))
-              }
-            } catch (_error) {
-              void _error
-            }
             redirectAfterLogin()
             return
           }
