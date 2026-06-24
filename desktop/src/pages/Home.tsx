@@ -5,6 +5,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   checkForUpdates,
+  openDashboardUrl,
   openStatusReportWindow,
   resizeMainWindowToContent,
   type AuthStatusSnapshot,
@@ -192,6 +193,7 @@ export function HomePage({
 
   const baseUrl = `${runtimeSnapshot.proxyStatus.address}/v1`;
   const groups = runtimeSnapshot.groups;
+  const accountLabel = authStatus.email?.trim() ? authStatus.email : t("home.noEmail");
 
   return (
     <div className="app-shell">
@@ -258,7 +260,14 @@ export function HomePage({
       </div>
 
       <footer className="status-bar" ref={statusBarRef}>
-        <span className="account-name">{authStatus.email ?? t("common.unknown")}</span>
+        <button
+          className="account-name account-name-button"
+          onClick={() => void openDashboardUrl()}
+          title={t("home.openDashboard")}
+          type="button"
+        >
+          {accountLabel}
+        </button>
         <button
           className="status-icon-button"
           onClick={() => void handleSignOutClick()}

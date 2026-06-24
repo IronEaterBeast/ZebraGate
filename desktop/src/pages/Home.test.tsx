@@ -114,6 +114,30 @@ describe("HomePage", () => {
     expect(t("home.updateCheckFailed")).toBe("检查更新失败");
   });
 
+  it("shows an explicit no-email label for signed-in accounts without email", () => {
+    const runtimeSnapshot = createRuntimeSnapshot();
+    const html = renderToStaticMarkup(
+      <HomePage
+        authStatus={{ loggedIn: true, email: null, userId: "user-1" }}
+        error={null}
+        isBusy={false}
+        onLogin={async () => undefined}
+        onLogout={async () => undefined}
+        onOpenGroupManagement={() => undefined}
+        onRefresh={async () => undefined}
+        onSwitchGroup={() => undefined}
+        runtimeSnapshot={runtimeSnapshot}
+        selectedAiCount={0}
+        viewedGroup={createViewedGroup(runtimeSnapshot)}
+      />
+    );
+
+    expect(html).toContain("无邮箱");
+    expect(html).toContain("account-name-button");
+    expect(html).toContain("打开 Dashboard");
+    expect(html).not.toContain("未知");
+  });
+
   it("does not render developer-only config fields for normal users", () => {
     const runtimeSnapshot = createRuntimeSnapshot();
     const html = renderToStaticMarkup(

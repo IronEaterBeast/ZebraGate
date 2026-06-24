@@ -177,6 +177,10 @@ export async function openLoginUrl(): Promise<void> {
   return invoke<void>("open_login_url");
 }
 
+export async function openDashboardUrl(): Promise<void> {
+  return invoke<void>("open_dashboard_url");
+}
+
 export async function getAuthStatus(): Promise<AuthStatusSnapshot> {
   return invoke<AuthStatusSnapshot>("get_auth_status");
 }

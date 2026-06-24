@@ -12,6 +12,7 @@ export {
   getLocalProxyStatus,
   listGroups,
   logout,
+  openDashboardUrl,
   openErrorLogWindow,
   openGroupManagementWindow,
   openLoginUrl,

@@ -16,6 +16,8 @@
     "version": "版本 {{version}}",
     "signIn": "登录",
     "signOut": "退出登录",
+    "noEmail": "无邮箱",
+    "openDashboard": "打开 Dashboard",
     "group": "分组",
     "groupOption": "{{name}}（已选 {{count}}）",
     "manage": "管理",

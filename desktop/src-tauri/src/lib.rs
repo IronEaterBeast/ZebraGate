@@ -1282,6 +1282,7 @@ pub fn run() {
             rename_group,
             delete_group,
             open_login_url,
+            open_dashboard_url,
             get_auth_status,
             logout,
             open_group_management_window,
@@ -1827,6 +1828,17 @@ async fn open_login_url(
     app_handle
         .opener()
         .open_url(login_url, None::<&str>)
+        .map_err(|error| format!("Failed to open system browser: {error}"))
+}
+
+#[tauri::command]
+async fn open_dashboard_url(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let dashboard_url = build_dashboard_url(&resolve_web_base_url()?);
+    app_handle
+        .opener()
+        .open_url(dashboard_url, None::<&str>)
         .map_err(|error| format!("Failed to open system browser: {error}"))
 }
 
@@ -3782,6 +3794,10 @@ fn resolve_web_base_url() -> Result<String, String> {
     )
 }
 
+fn build_dashboard_url(web_base_url: &str) -> String {
+    format!("{}/dashboard", web_base_url.trim_end_matches('/'))
+}
+
 fn build_local_address(port: u16) -> String {
     format!("http://{LOCAL_PROXY_HOST}:{port}")
 }
@@ -4211,6 +4227,18 @@ mod tests {
         let y = work_area_bottom_aligned_y(50, 200, 300);
 
         assert_eq!(y, 50);
+    }
+
+    #[test]
+    fn build_dashboard_url_appends_dashboard_once() {
+        assert_eq!(
+            build_dashboard_url("https://example.com"),
+            "https://example.com/dashboard"
+        );
+        assert_eq!(
+            build_dashboard_url("https://example.com/"),
+            "https://example.com/dashboard"
+        );
     }
 
     #[test]

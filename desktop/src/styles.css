@@ -241,9 +241,22 @@ button {
 
 .status-bar .account-name {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   min-width: 0;
   flex-shrink: 1;
+}
+
+.account-name-button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.account-name-button:hover {
+  text-decoration: underline;
 }
 
 .status-update-button {
